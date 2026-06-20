@@ -1,0 +1,49 @@
+# ── Configuration personnelle ─────────────────────────────────────────────────
+# Contient tokens, mots de passe, clés API — ne jamais commiter.
+# Dupliquer config.example.py → config.py pour configurer localement.
+config.py
+
+# ── Base de données & données persistantes ────────────────────────────────────
+data/cache.db
+data/downloads/
+
+# ── Models DL ─────────────────────────────────────────────────────────────────
+models/full.pt
+models/limited.pt
+
+# ── Scripts d'environnement local ─────────────────────────────────────────────
+start_z2m.sh
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Environnements virtuels ───────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+
+# ── IDE / outils locaux ───────────────────────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+CLAUDE.md
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+logo.svg
+conftest.py
