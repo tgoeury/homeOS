@@ -14,11 +14,10 @@ paho-mqtt>=1.6     # Subscriber Zigbee2MQTT
 yt-dlp>=2024.1     # Téléchargement audio (Data dump)
 mutagen>=1.47      # Lecture/écriture tags ID3 et Vorbis
 
-# modules/home_model — modélisation thermique + planification confort
+# Moteur de confort — inférence thermique + planification volets/fenêtres
 torch>=2.2
 pandas>=2.1
 numpy>=1.26
-matplotlib>=3.8
 
 # À activer au fur et à mesure :
 # influxdb-client>=3.0    # Base de données séries temporelles
