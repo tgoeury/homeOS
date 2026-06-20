@@ -1102,8 +1102,8 @@ def _page_reseau() -> html.Div:
             html.Div([
                 _sec_title("NAS — Stockage"),
                 html.Div(id="nas-volumes", style={"marginBottom": "12px"}),
-                _sec_title("NAS — Disques"),
-                html.Div(id="nas-disks"),
+                _sec_title("NAS — Système"),
+                html.Div(id="nas-system"),
                 html.Div(
                     "OUTDATED",
                     id="nas-outdated-tag",

@@ -1449,10 +1449,8 @@ def _build_worldmap(countries: list) -> go.Figure:
 
 def _nas_volume_row(vol: dict) -> html.Div:
     """Rend une ligne de volume NAS avec barre de progression et métadonnées."""
-    pct    = vol["used_pct"]
-    color  = CP["red"] if pct > 85 else CP["orange"] if pct > 70 else CP["green"]
-    status = vol["status"]
-    status_color = CP["green"] if status == "normal" else CP["red"]
+    pct   = vol["used_pct"]
+    color = CP["red"] if pct > 85 else CP["orange"] if pct > 70 else CP["green"]
     return html.Div([
         html.Div([
             html.Span(vol["path"], style={
@@ -1474,45 +1472,48 @@ def _nas_volume_row(vol: dict) -> html.Div:
             style={"height": "5px", "background": "rgba(255,255,255,0.06)",
                    "marginBottom": "4px"},
         ),
-        html.Div([
+        html.Div(
             html.Span(f"Libre : {vol['free_str']}", style={
                 "fontFamily": FONT_MONO, "fontSize": "11px", "color": CP["text_dim"],
             }),
-            html.Span(status.upper(), style={
-                "fontFamily": FONT_MONO, "fontSize": "11px", "color": status_color,
-                "letterSpacing": "1px",
-            }),
-        ], style={"display": "flex", "justifyContent": "space-between",
-                  "marginBottom": "10px"}),
+            style={"marginBottom": "10px"},
+        ),
     ])
 
 
-def _nas_disk_row(disk: dict) -> html.Div:
-    """Rend une ligne de disque NAS avec statut SMART et température."""
-    status = disk.get("status", "unknown")
-    status_color = CP["green"] if status == "normal" else CP["red"]
-    temp = disk.get("temp")
-    temp_str = f"{temp}°C" if temp is not None else "—"
-    temp_color = CP["red"] if (temp or 0) > 55 else CP["orange"] if (temp or 0) > 45 else CP["text_dim"]
-    return html.Div([
-        html.Span(disk["name"], style={
-            "fontFamily": FONT_MONO, "fontSize": "12px", "color": CP["cyan"],
-            "minWidth": "60px",
-        }),
-        html.Span(disk.get("model", "—"), style={
-            "fontFamily": FONT_MONO, "fontSize": "11px", "color": CP["text_dim"],
-            "flex": "1",
-        }),
-        html.Span(temp_str, style={
-            "fontFamily": FONT_MONO, "fontSize": "12px", "color": temp_color,
-            "minWidth": "44px", "textAlign": "right",
-        }),
-        html.Span(status.upper(), style={
-            "fontFamily": FONT_MONO, "fontSize": "11px", "color": status_color,
-            "letterSpacing": "1px", "minWidth": "64px", "textAlign": "right",
-        }),
-    ], style={"display": "flex", "alignItems": "center", "gap": "8px",
-              "padding": "4px 0", "borderBottom": "1px solid rgba(255,255,255,0.04)"})
+def _nas_system_children(system: dict) -> list:
+    """Rend les infos système NAS (modèle, température, uptime, version)."""
+    temp = system.get("temperature")
+    temp_color = (CP["red"] if (temp or 0) > 60
+                  else CP["orange"] if (temp or 0) > 50
+                  else CP["green"])
+    temp_warn = system.get("temperature_warn", False)
+
+    uptime_s = system.get("uptime_s", 0)
+    days, rem = divmod(int(uptime_s), 86400)
+    hours = rem // 3600
+    uptime_str = f"{days}j {hours}h" if days else f"{hours}h"
+
+    rows = [
+        ("Modèle",      system.get("model", "—"),  CP["text_dim"]),
+        ("RAM",         f"{system.get('ram_mb', 0)} MB", CP["text_dim"]),
+        ("Température", f"{temp}°C{'  ⚠' if temp_warn else ''}", temp_color),
+        ("Uptime",      uptime_str,                 CP["text_dim"]),
+        ("Version DSM", system.get("version", "—"), CP["text_dim"]),
+    ]
+    items = []
+    for label, value, color in rows:
+        items.append(html.Div([
+            html.Span(f"{label} :", style={
+                "fontFamily": FONT_MONO, "fontSize": "11px",
+                "color": CP["text_dim"], "minWidth": "110px",
+            }),
+            html.Span(value, style={
+                "fontFamily": FONT_MONO, "fontSize": "12px", "color": color,
+            }),
+        ], style={"display": "flex", "gap": "8px", "padding": "3px 0",
+                  "borderBottom": "1px solid rgba(255,255,255,0.04)"}))
+    return items
 
 
 _NAS_TAG_STYLE = {
@@ -1531,7 +1532,7 @@ _NAS_TAG_HIDDEN = {"display": "none"}
     Output("r-table",           "children"),
     Output("r-worldmap",        "figure"),
     Output("nas-volumes",       "children"),
-    Output("nas-disks",         "children"),
+    Output("nas-system",        "children"),
     Output("nas-outdated-tag",  "style"),
     Input("interval-reseau", "n_intervals"),
 )
@@ -1607,32 +1608,29 @@ def update_reseau(_n):
     # ── NAS Synology (cache 1 h) ───────────────────────────────────────────────
     nas_data = synology_client.fetch()
 
+    _dim = {"fontSize": "12px", "color": CP["text_dim"], "fontFamily": FONT_MONO}
     if nas_data and nas_data.get("volumes"):
         nas_vol_children = [_nas_volume_row(v) for v in nas_data["volumes"]]
     elif not synology_client.is_configured():
-        nas_vol_children = html.Div(
-            "// NAS non configuré (SYNOLOGY_NAS_USER vide)",
-            style={"fontSize": "12px", "color": CP["text_dim"], "fontFamily": FONT_MONO},
-        )
+        nas_vol_children = html.Div("// NAS non configuré (SYNOLOGY_NAS_USER vide)", style=_dim)
     else:
-        nas_vol_children = html.Div(
-            "// En attente du premier fetch…",
-            style={"fontSize": "12px", "color": CP["text_dim"], "fontFamily": FONT_MONO},
-        )
+        nas_vol_children = html.Div("// En attente du premier fetch…", style=_dim)
 
-    if nas_data and nas_data.get("disks"):
-        nas_disk_children = [_nas_disk_row(d) for d in nas_data["disks"]]
-    else:
-        nas_disk_children = html.Div(
-            "—",
-            style={"fontSize": "12px", "color": CP["text_dim"], "fontFamily": FONT_MONO},
-        )
+    nas_sys_children = (
+        _nas_system_children(nas_data["system"])
+        if nas_data and nas_data.get("system")
+        else html.Div("—", style=_dim)
+    )
 
-    nas_tag_style = _NAS_TAG_STYLE if synology_client.is_stale(NAS_STALE_SECS) and synology_client.is_configured() else _NAS_TAG_HIDDEN
+    nas_tag_style = (
+        _NAS_TAG_STYLE
+        if synology_client.is_stale(NAS_STALE_SECS) and synology_client.is_configured()
+        else _NAS_TAG_HIDDEN
+    )
 
     return (device_count, blocked_str, rate_str, device_table,
             _build_worldmap(countries),
-            nas_vol_children, nas_disk_children, nas_tag_style)
+            nas_vol_children, nas_sys_children, nas_tag_style)
 
 
 
@@ -2148,7 +2146,7 @@ def update_home_status(_n):
     if comfort_engine.model_status() == comfort_engine.STATUS_NONE:
         log_items.append(_log_entry(
             now_str, "ERREUR",
-            "CONFORT · aucun modele predictif disponible (home_model)",
+            "CONFORT · aucun modele predictif disponible (deposer limited.pt dans ./models/)",
             CP["red"],
         ))
 

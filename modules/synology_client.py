@@ -1,22 +1,29 @@
 """
 HomeOS — modules/synology_client.py
-Client REST pour l'API DSM Synology — stockage et santé des disques.
+Client REST pour l'API DSM Synology — espace disque par dossier partagé.
+
+Compte dédié non-admin (groupe "users" uniquement) : les endpoints
+SYNO.Core.Storage.* (Storage Manager, santé SMART des disques) exigent un
+compte membre du groupe "administrators" et renvoient 402 (Permission
+denied) sinon. On reste volontairement sur File Station, accessible aux
+comptes non-admin avec la seule permission applicative "File Station".
+→ Conséquence : pas de santé SMART / température disque avec ce compte.
+   Pour ça il faudrait soit passer le compte en administrators, soit créer
+   un second compte admin dédié à cette unique lecture.
 
 Endpoints utilisés (DSM 6 / 7) :
   POST /webapi/auth.cgi
-       api=SYNO.API.Auth&version=3&method=login&account=…&passwd=…
+       api=SYNO.API.Auth&version=3&method=login&account=…&passwd=…&session=FileStation
        → {"data": {"sid": "…"}, "success": true}
 
   GET  /webapi/entry.cgi
-       api=SYNO.Core.Storage.Volume&version=1&method=list&_sid=…
-       → {"data": {"volumes": [{volume_path, size_total_byte, size_used_byte, status}]}}
-
-  GET  /webapi/entry.cgi
-       api=SYNO.Core.Storage.Disk&version=1&method=list&_sid=…
-       → {"data": {"disks": [{name, model, temp, status, diskno}]}}
+       api=SYNO.FileStation.List&version=2&method=list_share
+       &additional=["volume_status"]&_sid=…
+       → {"data": {"shares": [{path, name,
+                                additional: {volume_status: {freespace, totalspace}}}]}}
 
   GET  /webapi/auth.cgi
-       api=SYNO.API.Auth&version=1&method=logout&_sid=…
+       api=SYNO.API.Auth&version=1&method=logout&session=FileStation&_sid=…
 
 Stratégie :
   - Cache en mémoire TTL = 1 h (CFG.SYNOLOGY_NAS_TTL si défini, sinon 3600 s).
@@ -41,6 +48,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 NAS_STALE_SECS = 6 * 3600   # délai au-delà duquel la data est considérée obsolète
 
+# Nom de session DSM : doit correspondre à une application reconnue. File Station
+# est accessible aux comptes non-admin via la permission applicative dédiée,
+# contrairement à DSM Core / Storage Manager qui exige le groupe administrators.
+SESSION_NAME = "FileStation"
+
 
 def _fmt_bytes(n: int) -> str:
     """Convertit un nombre d'octets en chaîne lisible (TB, GB, MB)."""
@@ -55,11 +67,12 @@ def _fmt_bytes(n: int) -> str:
 
 class SynologyClient:
     """
-    Client léger pour l'API REST DSM Synology.
+    Client léger pour l'API REST DSM Synology (File Station, compte non-admin).
 
-    Chaque appel à fetch() établit une session (login), interroge les endpoints
-    volumes et disques, puis ferme la session (logout). Le résultat est mis en
-    cache en mémoire pour éviter de surcharger le NAS.
+    Chaque appel à fetch() établit une session (login), interroge la liste des
+    dossiers partagés avec leur espace volume associé, puis ferme la session
+    (logout). Le résultat est mis en cache en mémoire pour éviter de surcharger
+    le NAS.
     """
 
     def __init__(self) -> None:
@@ -97,7 +110,7 @@ class SynologyClient:
     # ── Session DSM ───────────────────────────────────────────────────────────
 
     def _login(self) -> str | None:
-        """Ouvre une session DSM. Retourne le sid ou None en cas d'erreur."""
+        """Ouvre une session DSM (File Station). Retourne le sid ou None en cas d'erreur."""
         try:
             resp = requests.post(
                 f"{self._base_url()}/auth.cgi",
@@ -107,7 +120,7 @@ class SynologyClient:
                     "method":  "login",
                     "account": CFG.SYNOLOGY_NAS_USER,
                     "passwd":  CFG.SYNOLOGY_NAS_PASSWORD,
-                    "session": "HomeOS",
+                    "session": SESSION_NAME,
                     "format":  "sid",
                 },
                 timeout=10,
@@ -131,7 +144,7 @@ class SynologyClient:
                     "api":     "SYNO.API.Auth",
                     "version": "1",
                     "method":  "logout",
-                    "session": "HomeOS",
+                    "session": SESSION_NAME,
                     "_sid":    sid,
                 },
                 timeout=5,
@@ -144,33 +157,53 @@ class SynologyClient:
 
     def _get_volumes(self, sid: str) -> list[dict]:
         """
-        Interroge SYNO.Core.Storage.Volume.
-        Retourne [{path, total_bytes, used_bytes, free_bytes, used_pct, status}].
+        Interroge SYNO.FileStation.List (method=list_share, additional=volume_status).
+        Accessible aux comptes non-admin avec la permission File Station.
+
+        Note : plusieurs dossiers partagés peuvent pointer vers le même volume
+        physique (ex. "homes" et "photo" sur volume1) ; on déduplique sur le
+        chemin de volume sous-jacent pour ne pas compter le même espace deux fois.
+
+        Retourne [{path, total_bytes, used_bytes, free_bytes, used_pct}].
         """
         try:
             resp = requests.get(
                 f"{self._base_url()}/entry.cgi",
                 params={
-                    "api":     "SYNO.Core.Storage.Volume",
-                    "version": "1",
-                    "method":  "list",
-                    "_sid":    sid,
+                    "api":        "SYNO.FileStation.List",
+                    "version":    "2",
+                    "method":     "list_share",
+                    "additional": '["volume_status"]',
+                    "_sid":       sid,
                 },
                 timeout=10,
                 verify=False,
             )
             body = resp.json()
             if not body.get("success"):
-                logger.warning("SynologyClient: volumes — %s", body.get("error"))
+                logger.warning("SynologyClient: list_share — %s", body.get("error"))
                 return []
+
+            seen_volumes: set[str] = set()
             volumes = []
-            for v in body.get("data", {}).get("volumes", []):
-                total = int(v.get("size_total_byte", 0))
-                used  = int(v.get("size_used_byte", 0))
-                free  = total - used
-                pct   = round(used / total * 100) if total else 0
+            for share in body.get("data", {}).get("shares", []):
+                vol_status = share.get("additional", {}).get("volume_status", {})
+                total = int(vol_status.get("totalspace", 0))
+                free  = int(vol_status.get("freespace", 0))
+                if total == 0:
+                    continue
+
+                # Identifiant de volume physique = couple (total, free) à l'instant T,
+                # suffisant pour dédupliquer les partages d'un même volume dans un seul cycle fetch().
+                vol_key = f"{total}:{free}"
+                if vol_key in seen_volumes:
+                    continue
+                seen_volumes.add(vol_key)
+
+                used = total - free
+                pct  = round(used / total * 100) if total else 0
                 volumes.append({
-                    "path":        v.get("volume_path", "—"),
+                    "path":        share.get("path", "—"),
                     "total_bytes": total,
                     "used_bytes":  used,
                     "free_bytes":  free,
@@ -178,53 +211,46 @@ class SynologyClient:
                     "total_str":   _fmt_bytes(total),
                     "used_str":    _fmt_bytes(used),
                     "free_str":    _fmt_bytes(free),
-                    "status":      v.get("status", "unknown"),
-                    "fs_type":     v.get("fs_type", ""),
                 })
             return volumes
         except Exception as exc:
             logger.error("SynologyClient: volumes exception — %s", exc)
             return []
 
-    def _get_disks(self, sid: str) -> list[dict]:
+    def _get_system_info(self, sid: str) -> dict:
         """
-        Interroge SYNO.Core.Storage.Disk.
-        Retourne [{name, model, temp, status}].
+        Interroge SYNO.DSM.Info (accessible aux comptes non-admin).
+        Retourne {model, ram_mb, temperature, temperature_warn, uptime_s, version}.
         """
         try:
             resp = requests.get(
                 f"{self._base_url()}/entry.cgi",
-                params={
-                    "api":     "SYNO.Core.Storage.Disk",
-                    "version": "1",
-                    "method":  "list",
-                    "_sid":    sid,
-                },
+                params={"api": "SYNO.DSM.Info", "version": "2", "method": "getinfo", "_sid": sid},
                 timeout=10,
                 verify=False,
             )
             body = resp.json()
             if not body.get("success"):
-                logger.warning("SynologyClient: disks — %s", body.get("error"))
-                return []
-            disks = []
-            for d in body.get("data", {}).get("disks", []):
-                disks.append({
-                    "name":   d.get("diskno") or d.get("name", "—"),
-                    "model":  d.get("model", "—"),
-                    "temp":   d.get("temp"),        # °C ou None
-                    "status": d.get("status", "unknown"),
-                })
-            return disks
+                logger.warning("SynologyClient: DSM.Info — %s", body.get("error"))
+                return {}
+            d = body["data"]
+            return {
+                "model":            d.get("model", "—"),
+                "ram_mb":           d.get("ram", 0),
+                "temperature":      d.get("temperature"),
+                "temperature_warn": d.get("temperature_warn", False),
+                "uptime_s":         d.get("uptime", 0),
+                "version":          d.get("version_string", "—"),
+            }
         except Exception as exc:
-            logger.error("SynologyClient: disks exception — %s", exc)
-            return []
+            logger.error("SynologyClient: DSM.Info exception — %s", exc)
+            return {}
 
     # ── Interface publique ────────────────────────────────────────────────────
 
     def fetch(self, force: bool = False) -> dict | None:
         """
-        Retourne {volumes, disks, fetched_at} depuis le cache si frais (< TTL).
+        Retourne {volumes, system, fetched_at} depuis le cache si frais (< TTL).
         Force un appel API si force=True ou si le cache est périmé.
         Retourne None si non configuré ou si l'API échoue.
         """
@@ -241,19 +267,19 @@ class SynologyClient:
 
         try:
             volumes = self._get_volumes(sid)
-            disks   = self._get_disks(sid)
+            system  = self._get_system_info(sid)
         finally:
             self._logout(sid)
 
         self._cache = {
             "volumes":    volumes,
-            "disks":      disks,
+            "system":     system,
             "fetched_at": time.time(),
         }
         self._cache_ts = time.time()
         logger.info(
-            "SynologyClient: %d volume(s), %d disque(s) mis à jour",
-            len(volumes), len(disks),
+            "SynologyClient: %d volume(s), temp=%s°C, uptime=%ds",
+            len(volumes), system.get("temperature"), system.get("uptime_s"),
         )
         return self._cache
 
