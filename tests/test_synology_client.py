@@ -24,35 +24,43 @@ def _auth_fail():
     return {"success": False, "error": {"code": 400}}
 
 
+# SYNO.FileStation.List format — shares avec additional.volume_status
 VOLUMES_RESP = {
     "success": True,
     "data": {
-        "volumes": [
+        "shares": [
             {
-                "volume_path":    "/volume1",
-                "size_total_byte": 8_000_000_000_000,
-                "size_used_byte":  2_000_000_000_000,
-                "status":          "normal",
-                "fs_type":         "btrfs",
+                "path": "/volume1",
+                "additional": {
+                    "volume_status": {
+                        "totalspace": 8_000_000_000_000,
+                        "freespace":  6_000_000_000_000,
+                    }
+                },
             },
             {
-                "volume_path":    "/volume2",
-                "size_total_byte": 4_000_000_000_000,
-                "size_used_byte":  3_600_000_000_000,
-                "status":          "normal",
-                "fs_type":         "ext4",
+                "path": "/volume2",
+                "additional": {
+                    "volume_status": {
+                        "totalspace": 4_000_000_000_000,
+                        "freespace":    400_000_000_000,
+                    }
+                },
             },
         ]
     },
 }
 
-DISKS_RESP = {
+# SYNO.DSM.Info format
+SYSTEM_RESP = {
     "success": True,
     "data": {
-        "disks": [
-            {"diskno": "Disk 1", "model": "ST4000VX007", "temp": 35, "status": "normal"},
-            {"diskno": "Disk 2", "model": "WD40PURZ",    "temp": 38, "status": "normal"},
-        ]
+        "model":            "DS420+",
+        "ram":              2048,
+        "temperature":      42,
+        "temperature_warn": False,
+        "uptime":           86400,
+        "version_string":   "DSM 7.2.1-69057",
     },
 }
 
@@ -151,24 +159,24 @@ class TestStaleness:
         assert client.cache_age() is None
 
     def test_not_stale_when_fresh_cache(self, client):
-        client._cache = {"volumes": [], "disks": [], "fetched_at": time.time()}
+        client._cache    = {"volumes": [], "system": {}, "fetched_at": time.time()}
         client._cache_ts = time.time()
         assert client.is_stale(3600) is False
 
     def test_stale_after_ttl(self, client):
-        client._cache = {"volumes": [], "disks": [], "fetched_at": time.time()}
+        client._cache    = {"volumes": [], "system": {}, "fetched_at": time.time()}
         client._cache_ts = time.time() - 3700
         assert client.is_stale(3600) is True
 
     def test_stale_at_custom_threshold(self, client):
         client._cache_ts = time.time() - 7_200
-        client._cache = {"volumes": [], "disks": []}
+        client._cache    = {"volumes": [], "system": {}}
         assert client.is_stale(6 * 3600) is False
         assert client.is_stale(3600) is True
 
     def test_cache_age_returns_elapsed(self, client):
         client._cache_ts = time.time() - 1800
-        client._cache = {}
+        client._cache    = {}
         assert client.cache_age() == pytest.approx(1800, abs=2)
 
 
@@ -237,19 +245,19 @@ class TestGetVolumes:
                    return_value=_make_resp(VOLUMES_RESP)):
             vols = client._get_volumes("sid")
         assert len(vols) == 2
-        assert vols[0]["path"] == "/volume1"
+        assert vols[0]["path"]        == "/volume1"
         assert vols[0]["total_bytes"] == 8_000_000_000_000
-        assert vols[0]["used_bytes"]  == 2_000_000_000_000
+        assert vols[0]["used_bytes"]  == 2_000_000_000_000   # total - free
         assert vols[0]["free_bytes"]  == 6_000_000_000_000
         assert vols[0]["used_pct"]    == 25
-        assert vols[0]["status"]      == "normal"
 
     def test_calculates_used_pct(self, client):
-        resp = {"success": True, "data": {"volumes": [{
-            "volume_path": "/v1",
-            "size_total_byte": 1000,
-            "size_used_byte":  750,
-            "status": "normal",
+        resp = {"success": True, "data": {"shares": [{
+            "path": "/v1",
+            "additional": {"volume_status": {
+                "totalspace": 1000,
+                "freespace":  250,
+            }},
         }]}}
         with patch("modules.synology_client.requests.get", return_value=_make_resp(resp)):
             vols = client._get_volumes("sid")
@@ -273,87 +281,93 @@ class TestGetVolumes:
                    side_effect=req_lib.RequestException("conn refused")):
             assert client._get_volumes("sid") == []
 
-    def test_zero_division_safe_when_total_zero(self, client):
-        resp = {"success": True, "data": {"volumes": [{
-            "volume_path": "/v1",
-            "size_total_byte": 0,
-            "size_used_byte":  0,
-            "status": "normal",
+    def test_zero_total_share_is_skipped(self, client):
+        # _get_volumes filtre les entrées avec totalspace == 0
+        resp = {"success": True, "data": {"shares": [{
+            "path": "/v1",
+            "additional": {"volume_status": {"totalspace": 0, "freespace": 0}},
         }]}}
+        with patch("modules.synology_client.requests.get", return_value=_make_resp(resp)):
+            assert client._get_volumes("sid") == []
+
+    def test_deduplicates_shares_on_same_volume(self, client):
+        # Deux partages sur le même volume physique (même totalspace/freespace)
+        resp = {"success": True, "data": {"shares": [
+            {"path": "/homes", "additional": {"volume_status": {"totalspace": 4_000_000_000_000, "freespace": 2_000_000_000_000}}},
+            {"path": "/photo", "additional": {"volume_status": {"totalspace": 4_000_000_000_000, "freespace": 2_000_000_000_000}}},
+        ]}}
         with patch("modules.synology_client.requests.get", return_value=_make_resp(resp)):
             vols = client._get_volumes("sid")
-        assert vols[0]["used_pct"] == 0
+        assert len(vols) == 1
 
 
-# ── _get_disks() ─────────────────────────────────────────────────────────────
+# ── _get_system_info() ────────────────────────────────────────────────────────
 
-class TestGetDisks:
-    def test_parses_disks_correctly(self, client):
+class TestGetSystemInfo:
+    def test_parses_system_info_correctly(self, client):
         with patch("modules.synology_client.requests.get",
-                   return_value=_make_resp(DISKS_RESP)):
-            disks = client._get_disks("sid")
-        assert len(disks) == 2
-        assert disks[0]["name"]   == "Disk 1"
-        assert disks[0]["model"]  == "ST4000VX007"
-        assert disks[0]["temp"]   == 35
-        assert disks[0]["status"] == "normal"
+                   return_value=_make_resp(SYSTEM_RESP)):
+            info = client._get_system_info("sid")
+        assert info["model"]            == "DS420+"
+        assert info["ram_mb"]           == 2048
+        assert info["temperature"]      == 42
+        assert info["temperature_warn"] is False
+        assert info["uptime_s"]         == 86400
+        assert info["version"]          == "DSM 7.2.1-69057"
 
-    def test_uses_diskno_over_name(self, client):
-        resp = {"success": True, "data": {"disks": [{
-            "diskno": "Disk 3", "name": "sdc",
-            "model": "WD", "temp": 32, "status": "normal",
-        }]}}
+    def test_temperature_can_be_none(self, client):
+        resp = {"success": True, "data": {
+            "model": "DS420+", "ram": 2048,
+            "uptime": 0, "version_string": "DSM 7",
+        }}
         with patch("modules.synology_client.requests.get", return_value=_make_resp(resp)):
-            disks = client._get_disks("sid")
-        assert disks[0]["name"] == "Disk 3"
+            info = client._get_system_info("sid")
+        assert info["temperature"] is None
 
     def test_returns_empty_on_api_failure(self, client):
         fail = {"success": False, "error": {"code": 105}}
         with patch("modules.synology_client.requests.get", return_value=_make_resp(fail)):
-            assert client._get_disks("sid") == []
+            assert client._get_system_info("sid") == {}
 
-    def test_temp_can_be_none(self, client):
-        resp = {"success": True, "data": {"disks": [{
-            "diskno": "Disk 1", "model": "X", "status": "normal",
-        }]}}
-        with patch("modules.synology_client.requests.get", return_value=_make_resp(resp)):
-            disks = client._get_disks("sid")
-        assert disks[0]["temp"] is None
+    def test_returns_empty_on_network_error(self, client):
+        import requests as req_lib
+        with patch("modules.synology_client.requests.get",
+                   side_effect=req_lib.RequestException("conn refused")):
+            assert client._get_system_info("sid") == {}
 
 
 # ── fetch() ───────────────────────────────────────────────────────────────────
 
 class TestFetch:
-    def _mock_api(self, client, auth_ok=True, vol_resp=None, disk_resp=None):
-        """Patch login + volumes + disks GET pour simuler un fetch complet."""
-        vol_resp  = vol_resp  or VOLUMES_RESP
-        disk_resp = disk_resp or DISKS_RESP
+    def _mock_api(self, client, auth_ok=True, vol_resp=None, sys_resp=None):
+        """Patch login + volumes (FileStation) + system (DSM.Info) pour simuler un fetch complet."""
+        vol_resp = vol_resp or VOLUMES_RESP
+        sys_resp = sys_resp or SYSTEM_RESP
         auth_resp = _auth_ok() if auth_ok else _auth_fail()
 
         def side_effect(url, **kwargs):
             params = kwargs.get("params", {})
             api = params.get("api", "")
-            if "Volume" in api:
+            if "FileStation" in api:
                 return _make_resp(vol_resp)
-            if "Disk" in api:
-                return _make_resp(disk_resp)
-            # logout
-            return _make_resp({"success": True})
+            if "DSM.Info" in api:
+                return _make_resp(sys_resp)
+            return _make_resp({"success": True})   # logout
 
         post_mock = MagicMock(return_value=_make_resp(auth_resp))
         get_mock  = MagicMock(side_effect=side_effect)
         return patch("modules.synology_client.requests.post", post_mock), \
                patch("modules.synology_client.requests.get",  get_mock)
 
-    def test_fetch_returns_dict_with_volumes_and_disks(self, client):
+    def test_fetch_returns_dict_with_volumes_and_system(self, client):
         p_post, p_get = self._mock_api(client)
         with p_post, p_get:
             result = client.fetch()
         assert result is not None
         assert "volumes" in result
-        assert "disks"   in result
+        assert "system"  in result
         assert len(result["volumes"]) == 2
-        assert len(result["disks"])   == 2
+        assert result["system"]["model"] == "DS420+"
 
     def test_fetch_updates_cache(self, client):
         p_post, p_get = self._mock_api(client)
@@ -363,7 +377,7 @@ class TestFetch:
         assert client._cache_ts > 0
 
     def test_fetch_uses_cache_within_ttl(self, client):
-        client._cache    = {"volumes": [], "disks": [], "fetched_at": time.time()}
+        client._cache    = {"volumes": [], "system": {}, "fetched_at": time.time()}
         client._cache_ts = time.time()
         with patch("modules.synology_client.requests.post") as mock_post:
             result = client.fetch()
@@ -371,7 +385,7 @@ class TestFetch:
         assert result is client._cache
 
     def test_fetch_force_bypasses_cache(self, client):
-        client._cache    = {"volumes": [], "disks": [], "fetched_at": time.time()}
+        client._cache    = {"volumes": [], "system": {}, "fetched_at": time.time()}
         client._cache_ts = time.time()
         p_post, p_get = self._mock_api(client)
         with p_post, p_get:
@@ -385,7 +399,7 @@ class TestFetch:
         assert result is None
 
     def test_fetch_returns_old_cache_on_login_failure(self, client):
-        old_cache = {"volumes": [{"path": "/v1"}], "disks": []}
+        old_cache = {"volumes": [{"path": "/v1"}], "system": {}}
         client._cache    = old_cache
         client._cache_ts = time.time() - 7200   # expiré
         with patch("modules.synology_client.requests.post",
@@ -399,10 +413,10 @@ class TestFetch:
         def get_side_effect(url, **kwargs):
             params = kwargs.get("params", {})
             api = params.get("api", "")
-            if "Volume" in api:
+            if "FileStation" in api:
                 return _make_resp(VOLUMES_RESP)
-            if "Disk" in api:
-                return _make_resp(DISKS_RESP)
+            if "DSM.Info" in api:
+                return _make_resp(SYSTEM_RESP)
             return _make_resp({"success": True})   # logout
 
         with patch("modules.synology_client.requests.post", mock_post):
@@ -420,9 +434,12 @@ class TestFetch:
         call_log = []
         def get_side_effect(url, **kwargs):
             params = kwargs.get("params", {})
-            if "Volume" in params.get("api", ""):
+            api = params.get("api", "")
+            if "FileStation" in api:
                 raise req_lib.RequestException("error")
-            # logout
+            if "DSM.Info" in api:
+                return _make_resp(SYSTEM_RESP)
+            # logout (SYNO.API.Auth)
             call_log.append("logout")
             return _make_resp({"success": True})
 
