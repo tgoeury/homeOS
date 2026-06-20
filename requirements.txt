@@ -15,7 +15,7 @@ yt-dlp>=2024.1     # Téléchargement audio (Data dump)
 mutagen>=1.47      # Lecture/écriture tags ID3 et Vorbis
 
 # Moteur de confort — inférence thermique + planification volets/fenêtres
-torch>=2.2
+onnxruntime>=1.17
 pandas>=2.1
 numpy>=1.26
 

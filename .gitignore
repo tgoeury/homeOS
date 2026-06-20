@@ -1,6 +1,4 @@
 # ── Configuration personnelle ─────────────────────────────────────────────────
-# Contient tokens, mots de passe, clés API — ne jamais commiter.
-# Dupliquer config.example.py → config.py pour configurer localement.
 config.py
 
 # ── Base de données & données persistantes ────────────────────────────────────
@@ -8,8 +6,8 @@ data/cache.db
 data/downloads/
 
 # ── Models DL ─────────────────────────────────────────────────────────────────
-models/full.pt
-models/limited.pt
+models/full.onnx
+models/limited.onnx
 
 # ── Scripts d'environnement local ─────────────────────────────────────────────
 start_z2m.sh
@@ -47,3 +45,5 @@ CLAUDE.md
 Thumbs.db
 logo.svg
 conftest.py
+models/limited.onnx
+.gitignore

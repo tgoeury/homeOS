@@ -6,12 +6,13 @@ thermique prédictif (GRU multi-résolution).
 
 Code extrait et intégré depuis modules/home_model/ (projet autonome supprimé) :
   · pipeline de données (météo OpenMeteo + features solaires)
-  · architecture GRU multi-résolution (modèle « limited »)
   · stratégie de planification (recherche aléatoire + rollout + coût de confort)
 
 Données météo : OpenMeteo hourly (past_days=2, forecast_days=2), mises en cache
 dans data_cache sous la clé 'weather.inference' (TTL 10 min).
-Checkpoints  : ./models/limited.pt  (et full.pt pour model_status())
+Modèles ONNX : ./models/limited.onnx  (et full.onnx pour model_status())
+Les métadonnées (colonnes, stats de normalisation, hyperparamètres) sont
+embarquées directement dans les fichiers ONNX (champ 'home_model_meta').
 
 Note sur le modèle « limited » : il prédit les températures intérieures sans
 prendre les capteurs intérieurs en entrée — seulement météo + solaire + état
@@ -23,16 +24,16 @@ API publique : model_status(), run_inference(), RoomPlan
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import onnxruntime as ort
 import pandas as pd
 import requests
-import torch
-import torch.nn as nn
 
 from modules.data_cache import data_cache
 
@@ -70,11 +71,6 @@ HISTORY_HOURS = sum(s["duration_minutes"] for s in RESOLUTION_SEGMENTS) / 60.0
 
 HOUSE_STATE_TYPES = ["shutter", "window"]
 HOUSE_FACES       = {"N": 0.0, "E": 90.0, "S": 180.0, "W": 270.0}
-
-GRU_HIDDEN_SIZE             = 64
-GRU_NUM_LAYERS              = 2
-GRU_DROPOUT                 = 0.1
-FULL_CORRECTION_HIDDEN_SIZE = 32   # conservé pour compatibilité checkpoints full.pt
 
 COMFORT_TEMP_MIN           = 19.0
 COMFORT_TEMP_MAX           = 26.0
@@ -117,10 +113,10 @@ class RoomPlan:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def model_status() -> str:
-    """'full', 'limited' ou 'none' selon les checkpoints présents dans ./models/."""
-    if (MODELS_DIR / "full.pt").exists():
+    """'full', 'limited' ou 'none' selon les modèles ONNX présents dans ./models/."""
+    if (MODELS_DIR / "full.onnx").exists():
         return STATUS_FULL
-    if (MODELS_DIR / "limited.pt").exists():
+    if (MODELS_DIR / "limited.onnx").exists():
         return STATUS_LIMITED
     return STATUS_NONE
 
@@ -374,96 +370,30 @@ def _build_feature_table() -> pd.DataFrame:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ARCHITECTURE DU MODÈLE  (d'après home_model/models/layers.py + limited.py)
+# CHARGEMENT DU MODÈLE ONNX
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class _MultiResolutionEncoder(nn.Module):
-    """Encodeur GRU pour une fenêtre d'historique multi-résolution.
-    Ajoute le delta temporel (normalisé) comme feature supplémentaire par pas."""
+def _load_onnx_model(path: Path = MODELS_DIR / "limited.onnx") -> tuple[ort.InferenceSession, dict]:
+    """Charge une session ONNX Runtime et extrait les métadonnées embarquées.
 
-    def __init__(
-        self, input_size: int,
-        hidden_size: int = GRU_HIDDEN_SIZE, num_layers: int = GRU_NUM_LAYERS,
-        dropout: float = GRU_DROPOUT, history_hours: float = HISTORY_HOURS,
-    ) -> None:
-        super().__init__()
-        offsets = _compute_window_offsets(_resolution_segments_for(history_hours))
-        dt = np.empty(len(offsets), dtype=np.float32)
-        if len(offsets) > 1:
-            dt[1:] = (offsets[:-1] - offsets[1:]) * SAMPLE_INTERVAL_MINUTES
-            dt[0]  = dt[1]
-        else:
-            dt[:] = SAMPLE_INTERVAL_MINUTES
-        dt /= dt.max()
-        self.register_buffer("dt", torch.from_numpy(dt).view(1, -1, 1))
-        self.hidden_size = hidden_size
-        self.gru = nn.GRU(
-            input_size=input_size + 1, hidden_size=hidden_size, num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0.0, batch_first=True,
+    Les métadonnées (colonnes, stats de normalisation, hyperparamètres) sont
+    stockées dans le champ custom 'home_model_meta' du fichier ONNX sous forme
+    de JSON. Les stats sont reconstruites en objets _FeatureStats numpy.
+
+    Retourne : (session, meta_dict)
+    """
+    sess = ort.InferenceSession(str(path))
+    raw  = json.loads(sess.get_modelmeta().custom_metadata_map["home_model_meta"])
+
+    def _to_stats(d: dict) -> _FeatureStats:
+        return _FeatureStats(
+            mean=np.array(d["mean"], dtype=np.float32),
+            std=np.array(d["std"],  dtype=np.float32),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (batch, n_steps, input_size) → dernier état caché (batch, hidden_size)."""
-        dt = self.dt.expand(x.shape[0], -1, -1)
-        _, h_n = self.gru(torch.cat([x, dt], dim=-1))
-        return h_n[-1]
-
-
-class _RegressionHead(nn.Module):
-    def __init__(self, input_size: int, output_size: int, hidden_size: int | None = None) -> None:
-        super().__init__()
-        h = hidden_size or input_size
-        self.net = nn.Sequential(nn.Linear(input_size, h), nn.ReLU(), nn.Linear(h, output_size))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class _LimitedModel(nn.Module):
-    """Modèle 'limited' : météo + solaire + volets/fenêtres → température intérieure."""
-
-    def __init__(
-        self, n_limited_features: int, n_targets: int,
-        hidden_size: int = GRU_HIDDEN_SIZE, num_layers: int = GRU_NUM_LAYERS,
-        dropout: float = GRU_DROPOUT, history_hours: float = HISTORY_HOURS,
-    ) -> None:
-        super().__init__()
-        self.encoder = _MultiResolutionEncoder(n_limited_features, hidden_size, num_layers, dropout, history_hours)
-        self.head    = _RegressionHead(hidden_size, n_targets)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(self.encoder(x))
-
-
-def _load_limited_model(checkpoint_path: Path = MODELS_DIR / "limited.pt"):
-    import sys, types
-
-    # Le checkpoint a été sauvegardé avec _FeatureStats dans home_model/data/pipeline.py.
-    # Pickle essaie d'importer ce chemin à la désérialisation → on injecte des faux modules
-    # qui exposent _FeatureStats sous tous les chemins possibles.
-    _injected: list[str] = []
-    for mod_name in ("data", "data.pipeline", "home_model", "home_model.data", "home_model.data.pipeline"):
-        if mod_name not in sys.modules:
-            m = types.ModuleType(mod_name)
-            m._FeatureStats = _FeatureStats   # nom actuel (privé)
-            m.FeatureStats   = _FeatureStats   # nom au moment de l'entraînement (public)
-            sys.modules[mod_name] = m
-            _injected.append(mod_name)
-
-    try:
-        ckpt = torch.load(checkpoint_path, weights_only=False)
-    finally:
-        for mod_name in _injected:
-            sys.modules.pop(mod_name, None)
-
-    model = _LimitedModel(
-        n_limited_features=ckpt["n_limited_features"],
-        n_targets=ckpt["n_targets"],
-        history_hours=ckpt["history_hours"],
-    )
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-    return model, ckpt
+    return sess, {**raw,
+                  "limited_stats": _to_stats(raw["limited_stats"]),
+                  "target_stats":  _to_stats(raw["target_stats"])}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -641,7 +571,7 @@ class _PlanningContext:
         self.now_timestamp = table.index[self.now_idx]
 
     def _predict(
-        self, model: nn.Module, schedule_steps: dict[tuple[str, str], np.ndarray],
+        self, sess: ort.InferenceSession, schedule_steps: dict[tuple[str, str], np.ndarray],
     ) -> np.ndarray:
         arr = self.window_array.copy()
         end = self.future_start_local + self.horizon_steps_count
@@ -649,21 +579,20 @@ class _PlanningContext:
             arr[self.future_start_local : end, col] = schedule_steps[key]
         arr_norm = self.limited_stats.transform(arr)
         batch    = arr_norm[self.local_rows_matrix]
-        with torch.no_grad():
-            pred = model(torch.from_numpy(batch))
-        return self.target_stats.inverse_transform(pred.numpy())
+        outputs  = sess.run(["predictions"], {"x_limited": batch})[0]
+        return self.target_stats.inverse_transform(outputs)
 
     def evaluate(
-        self, model: nn.Module, schedule_steps: dict[tuple[str, str], np.ndarray],
+        self, sess: ort.InferenceSession, schedule_steps: dict[tuple[str, str], np.ndarray],
         comfort_ranges: dict[str, tuple[float, float]] | None = None,
     ) -> float:
-        pred = self._predict(model, schedule_steps)
+        pred = self._predict(sess, schedule_steps)
         return _comfort_cost(pred[:, self.temperature_target_indices], self.temperature_target_rooms, comfort_ranges)
 
     def predict_temperatures(
-        self, model: nn.Module, schedule_steps: dict[tuple[str, str], np.ndarray],
+        self, sess: ort.InferenceSession, schedule_steps: dict[tuple[str, str], np.ndarray],
     ) -> dict[str, np.ndarray]:
-        pred = self._predict(model, schedule_steps)
+        pred = self._predict(sess, schedule_steps)
         return {
             room: pred[:, idx]
             for room, idx in zip(self.temperature_target_rooms, self.temperature_target_indices)
@@ -727,9 +656,9 @@ def _plan(
     seed: int = RANDOM_SEED,
     comfort_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> dict:
-    model, ckpt = _load_limited_model()
+    sess, meta = _load_onnx_model()
     table = _build_feature_table()
-    ctx   = _PlanningContext(table, ckpt, horizon_hours=horizon_hours, eval_step_minutes=eval_step_minutes)
+    ctx   = _PlanningContext(table, meta, horizon_hours=horizon_hours, eval_step_minutes=eval_step_minutes)
 
     rooms       = _DEFAULT_ROOMS
     state_types = HOUSE_STATE_TYPES
@@ -740,7 +669,7 @@ def _plan(
     for _ in range(n_candidates):
         candidate = _random_schedule(rooms, state_types, horizon_hours, block_hours, rng)
         steps     = _schedule_to_steps(candidate, ctx.horizon_steps_count, block_hours)
-        cost      = ctx.evaluate(model, steps, comfort_ranges)
+        cost      = ctx.evaluate(sess, steps, comfort_ranges)
         if cost < best_cost:
             best_cost, best_schedule = cost, candidate
 
@@ -750,7 +679,7 @@ def _plan(
         best_schedule = {k: v[:eff_blocks] for k, v in best_schedule.items()}
 
     best_steps    = _schedule_to_steps(best_schedule, ctx.horizon_steps_count, block_hours)
-    temps_by_room = ctx.predict_temperatures(model, best_steps)
+    temps_by_room = ctx.predict_temperatures(sess, best_steps)
     reasons       = _block_reasons(
         temps_by_room, ctx.eval_rows, ctx.now_idx, eff_blocks, block_hours, comfort_ranges,
     )

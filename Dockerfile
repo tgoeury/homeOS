@@ -7,8 +7,6 @@
 #
 # Build multi-arch avec buildx (depuis le PC) :
 #   docker buildx build --platform linux/amd64,linux/arm64 -t homeos .
-#   Note : la cross-compilation de torch via QEMU est très lente (~1 h sur arm64).
-#   Préférer un build natif sur chaque machine, ou utiliser --load sur la cible.
 #
 # Lancement :
 #   docker run -d --name homeos \

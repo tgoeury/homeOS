@@ -77,14 +77,14 @@ def test_model_status_none_empty_dir(tmp_path, monkeypatch):
 
 
 def test_model_status_limited(tmp_path, monkeypatch):
-    (tmp_path / "limited.pt").touch()
+    (tmp_path / "limited.onnx").touch()
     monkeypatch.setattr(ce, "MODELS_DIR", tmp_path)
     assert model_status() == STATUS_LIMITED
 
 
 def test_model_status_full_takes_priority(tmp_path, monkeypatch):
-    (tmp_path / "limited.pt").touch()
-    (tmp_path / "full.pt").touch()
+    (tmp_path / "limited.onnx").touch()
+    (tmp_path / "full.onnx").touch()
     monkeypatch.setattr(ce, "MODELS_DIR", tmp_path)
     assert model_status() == STATUS_FULL
 
