@@ -436,7 +436,26 @@ class _LimitedModel(nn.Module):
 
 
 def _load_limited_model(checkpoint_path: Path = MODELS_DIR / "limited.pt"):
-    ckpt  = torch.load(checkpoint_path, weights_only=False)
+    import sys, types
+
+    # Le checkpoint a été sauvegardé avec _FeatureStats dans home_model/data/pipeline.py.
+    # Pickle essaie d'importer ce chemin à la désérialisation → on injecte des faux modules
+    # qui exposent _FeatureStats sous tous les chemins possibles.
+    _injected: list[str] = []
+    for mod_name in ("data", "data.pipeline", "home_model", "home_model.data", "home_model.data.pipeline"):
+        if mod_name not in sys.modules:
+            m = types.ModuleType(mod_name)
+            m._FeatureStats = _FeatureStats   # nom actuel (privé)
+            m.FeatureStats   = _FeatureStats   # nom au moment de l'entraînement (public)
+            sys.modules[mod_name] = m
+            _injected.append(mod_name)
+
+    try:
+        ckpt = torch.load(checkpoint_path, weights_only=False)
+    finally:
+        for mod_name in _injected:
+            sys.modules.pop(mod_name, None)
+
     model = _LimitedModel(
         n_limited_features=ckpt["n_limited_features"],
         n_targets=ckpt["n_targets"],
@@ -563,13 +582,16 @@ class _PlanningContext:
         eval_step_minutes: float = PLANNING_EVAL_STEP_MINUTES,
     ) -> None:
         self.limited_columns: list[str] = checkpoint["limited_columns"]
-        table_lim = _select_columns(
+        table_lim = set(_select_columns(
             table, (f"weather{SEP}", f"solar{SEP}", f"house{SEP}"), exclude=(f"weather{SEP}kind",)
-        )
-        if table_lim != self.limited_columns:
+        ))
+        if table_lim != set(self.limited_columns):
+            missing = set(self.limited_columns) - table_lim
+            extra   = table_lim - set(self.limited_columns)
             raise ValueError(
                 "Les colonnes 'limited' de la table ne correspondent pas au checkpoint "
-                "(capteurs ajoutés/supprimés ?). Réentraînez le modèle."
+                f"(manquantes: {sorted(missing)}, en trop: {sorted(extra)}). "
+                "Réentraînez le modèle."
             )
 
         self.offsets       = _compute_window_offsets(_resolution_segments_for(checkpoint["history_hours"]))
