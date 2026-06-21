@@ -61,11 +61,11 @@ def _pad(n: int) -> str:
     return str(n).zfill(2)
 
 
-def _temp_color(val: float) -> str:
-    """Retourne une couleur CP selon les seuils d'alerte température de config.py."""
-    if val < CFG.ALERT_TEMP_MIN:
+def _temp_color(val: float, t_min: float = CFG.ALERT_TEMP_MIN, t_max: float = CFG.ALERT_TEMP_MAX) -> str:
+    """Retourne une couleur CP selon les bornes de confort fournies (ou les seuils config par défaut)."""
+    if val < t_min:
         return CP["cyan"]
-    if val > CFG.ALERT_TEMP_MAX:
+    if val > t_max:
         return CP["red"]
     return CP["green"]
 
@@ -781,6 +781,8 @@ def update_sensors(_n):
 
     for room_id, _, _, sensors in ROOMS:
         src = _sensor_source(room_id)
+        _cr = data_cache.read(f"confort.range.{room_id}")
+        t_min, t_max = (_cr["value"][0], _cr["value"][1]) if _cr else (CFG.ALERT_TEMP_MIN, CFG.ALERT_TEMP_MAX)
         for sid, _, default, _, _ in sensors:
             if sid in _plant_ids:
                 continue  # handled by update_plants
@@ -790,7 +792,7 @@ def update_sensors(_n):
                 real = sensor_store.get_room_value(room_id, "temperature")
                 if real is not None:
                     val = round(real, 1)
-                    col = _temp_color(val)
+                    col = _temp_color(val, t_min, t_max)
                     out = html.Span(f"{val}°C", style={"color": col})
                     data_cache.write(f"sensor.{room_id}.temperature", val, "°C", src)
                     data_logger.log(f"sensor_{room_id}_temperature", val, "°C", src)
