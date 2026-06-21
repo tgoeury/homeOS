@@ -11,7 +11,9 @@ Clés cache :
   sensor.<pièce>.<mesure>   — capteurs (temperature, humidity, luminosity)
   network.devices            — liste des appareils LAN [{ip, name}, …]
   network.dns.blocked/rate/total/countries
-  log.last.<name>            — dernière signature (source,value,unit) pour write-on-change
+  log.last.<name>            — dernière signature (source,value,unit,bucket) pour write-on-change
+                               le bucket change toutes les LOG_HEARTBEAT_INTERVAL secondes,
+                               forçant un enregistrement périodique même si la valeur est stable
 
 Séries history (name) :
   sensor_<room>_temperature / humidity / luminosity
@@ -35,6 +37,8 @@ logger = logging.getLogger(__name__)
 _DB_PATH = Path(__file__).parent.parent / "data" / "cache.db"
 
 # Ancienneté maximale autorisée par catégorie de clé (secondes)
+LOG_HEARTBEAT_INTERVAL: float = 1800  # 30 min — force un point en DB même si la valeur est stable
+
 STALE_THRESHOLDS: dict[str, float] = {
     "weather": 12 * 3600,   # 12 h
     "sensor":   1 * 3600,   #  1 h
@@ -148,11 +152,16 @@ class DataCache:
 
     def log(self, name: str, value, unit: str, source: str) -> None:
         """
-        Enregistre une entrée dans la table history avec write-on-change :
-        n'écrit que si (source, value, unit) diffère de la dernière entrée connue.
-        La dernière signature est mémorisée dans la table cache (clé log.last.<name>).
+        Enregistre une entrée dans la table history avec write-on-change + heartbeat.
+
+        N'écrit que si (source, value, unit, bucket) diffère de la dernière entrée connue,
+        où bucket = int(now // LOG_HEARTBEAT_INTERVAL). Cela garantit un point en base
+        toutes les 30 min même si la valeur ne change pas, rendant les graphes continus.
+        La signature est mémorisée dans la table cache (clé log.last.<name>).
         """
-        sig_new = (str(source), str(value), str(unit))
+        now     = time.time()
+        bucket  = int(now // LOG_HEARTBEAT_INTERVAL)
+        sig_new = (str(source), str(value), str(unit), bucket)
         sig_key = f"log.last.{name}"
         with self._lock:
             try:
@@ -166,7 +175,6 @@ class DataCache:
                         ).fetchone()
                         if has_data:
                             return
-                    now = time.time()
                     conn.execute(
                         "INSERT OR REPLACE INTO history (name,ts,source,value,unit) "
                         "VALUES (?,?,?,?,?)",

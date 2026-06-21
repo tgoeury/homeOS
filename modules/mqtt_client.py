@@ -74,6 +74,12 @@ class MQTTClient:
             log.warning("MQTT rc=%s (broker injoignable ?)", rc)
 
     def _on_message(self, client, userdata, msg):
+        # Les messages retained sont les dernières valeurs connues stockées par le broker
+        # (republié par Z2M au démarrage). Ils peuvent dater d'une session précédente et
+        # doivent être ignorés : sensor_store les horodaterait à now(), les faisant passer
+        # pour des données fraîches alors qu'elles sont potentiellement périmées.
+        if msg.retain:
+            return
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):

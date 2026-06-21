@@ -73,12 +73,12 @@ class TestLog:
 
     def test_log_same_sig_empty_history_writes_anyway(self, dc):
         """Bypass write-on-change : si l'historique est vide, toujours écrire."""
-        # Simule une signature sans historique correspondant
         import json
-        from modules.data_cache import DataCache as DC
+        from modules.data_cache import DataCache as DC, LOG_HEARTBEAT_INTERVAL
         dc2 = DC(path=Path(dc._path))
-        # Écrit une signature dans cache sans entrée history associée
-        sig = ["src", "21.0", "°C"]
+        # Injecte la signature exacte qu'utiliserait log() (4 éléments avec bucket courant)
+        bucket = int(time.time() // LOG_HEARTBEAT_INTERVAL)
+        sig = ["src", "21.0", "°C", bucket]
         with dc2._lock, dc2._connect() as conn:
             conn.execute(
                 "INSERT INTO cache (key,value,unit,source,updated_at) VALUES (?,?,?,?,?)",
@@ -87,6 +87,24 @@ class TestLog:
         # log() doit quand même écrire puisqu'il n'y a pas de data dans history
         dc2.log("orphan", 21.0, "°C", "src")
         assert len(dc2.read_history("orphan")) == 1
+
+    def test_log_forces_write_after_heartbeat_interval(self, dc, monkeypatch):
+        """Un point est écrit toutes les LOG_HEARTBEAT_INTERVAL secondes même si la valeur est stable."""
+        import modules.data_cache as dc_mod
+        # Premier write dans bucket 0
+        monkeypatch.setattr(dc_mod.time, "time", lambda: 0.0)
+        dc.log("s", 21.0, "°C", "src")
+        assert len(dc.read_history("s")) == 1
+
+        # Même valeur, même bucket → skip
+        monkeypatch.setattr(dc_mod.time, "time", lambda: dc_mod.LOG_HEARTBEAT_INTERVAL / 2)
+        dc.log("s", 21.0, "°C", "src")
+        assert len(dc.read_history("s")) == 1
+
+        # Même valeur, bucket suivant → heartbeat forcé
+        monkeypatch.setattr(dc_mod.time, "time", lambda: dc_mod.LOG_HEARTBEAT_INTERVAL + 1.0)
+        dc.log("s", 21.0, "°C", "src")
+        assert len(dc.read_history("s")) == 2
 
     def test_log_different_value_writes_new_entry(self, dc):
         dc.log("s", 21.0, "°C", "src")
