@@ -31,6 +31,8 @@ app.layout = build_layout()
 
 import modules.callbacks  # noqa: F401 — enregistre les @callback
 
+server = app.server  # WSGI entry point pour gunicorn (app:server)
+
 
 # ── Pré-fetch au démarrage ─────────────────────────────────────────────────────
 # Lance un thread daemon qui pré-chauffe les caches météo et réseau dès le
