@@ -1,7 +1,7 @@
 # HomeOS — dépendances Python
 # pip install -r requirements.txt
 
-dash>=2.17
+dash>=4.3.0
 plotly>=5.22
 requests>=2.31
 psutil>=5.9        # métriques système (CPU, RAM, disque, température)

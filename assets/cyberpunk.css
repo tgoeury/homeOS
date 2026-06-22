@@ -466,41 +466,53 @@ ul { margin: 0; }
   background: rgba(255,42,109,0.2);
 }
 
-/* ── Confort — plages de température (rc-slider) ─────────────────────────────── */
+/* ── Confort — plages de température (Dash 4 slider) ─────────────────────────── */
 .confort-slider-wrap {
   padding: 6px 10px 32px;
 }
-.confort-slider-wrap .rc-slider-rail {
+/* rail / background track */
+.confort-slider-wrap .dash-slider-track {
   height: 4px;
   background: rgba(255,255,255,0.06);
+  border-radius: 2px;
 }
-.confort-slider-wrap .rc-slider-track {
-  height: 4px;
+/* filled range between handles */
+.confort-slider-wrap .dash-slider-range {
   background: var(--accent, var(--cyan));
+  border-radius: 2px;
 }
-.confort-slider-wrap .rc-slider-dot {
+/* step dots — hidden */
+.confort-slider-wrap .dash-slider-dot {
   display: none;
 }
-.confort-slider-wrap .rc-slider-handle {
+/* handles */
+.confort-slider-wrap .dash-slider-thumb {
   width: 18px;
   height: 18px;
-  margin-top: -7px;
   background: var(--bg1);
   border: 2px solid var(--accent, var(--cyan));
-  opacity: 1;
+  border-radius: 50%;
+  outline: none;
+  cursor: grab;
 }
-.confort-slider-wrap .rc-slider-handle:hover,
-.confort-slider-wrap .rc-slider-handle:focus,
-.confort-slider-wrap .rc-slider-handle-dragging {
+.confort-slider-wrap .dash-slider-thumb:hover,
+.confort-slider-wrap .dash-slider-thumb:focus,
+.confort-slider-wrap .dash-slider-thumb:focus-visible,
+.confort-slider-wrap .dash-slider-thumb:active,
+.confort-slider-wrap .dash-slider-thumb[data-active] {
   border-color: var(--accent, var(--cyan)) !important;
   box-shadow: 0 0 8px var(--accent, var(--cyan)) !important;
 }
-.confort-slider-wrap .rc-slider-mark-text {
+/* mark labels */
+.confort-slider-wrap .dash-slider-mark {
   color: var(--text-dim);
   font-family: var(--mono);
   font-size: 11px;
+  background: transparent !important;
+  white-space: nowrap;
 }
-.confort-slider-wrap .rc-slider-tooltip-inner {
+/* always-visible tooltip bubbles */
+.confort-slider-wrap .dash-slider-tooltip {
   background: var(--bg2) !important;
   border: 1px solid var(--accent, var(--cyan));
   color: var(--text) !important;
@@ -509,9 +521,7 @@ ul { margin: 0; }
   border-radius: 0;
   box-shadow: none;
   padding: 3px 8px;
-}
-.confort-slider-wrap .rc-slider-tooltip-arrow {
-  display: none;
+  pointer-events: none;
 }
 
 /* Modal overlay */

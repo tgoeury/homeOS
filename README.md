@@ -52,7 +52,7 @@ Sensors communicate over Zigbee → Zigbee2MQTT → Mosquitto → homeOS. No clo
 
 | Layer | Technology |
 |---|---|
-| Dashboard | [Plotly Dash](https://dash.plotly.com/) 2.17+ |
+| Dashboard | [Plotly Dash](https://dash.plotly.com/) 4.3+ |
 | Data store | SQLite 3 (via stdlib `sqlite3`) |
 | Zigbee bridge | [Zigbee2MQTT](https://www.zigbee2mqtt.io/) + Mosquitto |
 | MQTT client | paho-mqtt |
