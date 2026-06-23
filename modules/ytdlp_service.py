@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,17 @@ class YtdlpJob:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _clean_url(url: str) -> str:
+    """Supprime les paramètres de tracking superflus d'une URL.
+
+    Conserve uniquement le premier paramètre de la query string, ce qui suffit
+    pour identifier la vidéo (ex. ?v=...) tout en éliminant list=, start_radio=, pp=…
+    """
+    parsed = urlparse(url.strip())
+    first_param = parsed.query.split("&")[0] if parsed.query else ""
+    return urlunparse(parsed._replace(query=first_param))
+
+
 def _infer_tags_from_filename(filename: str) -> dict:
     """Déduit des tags ID3 basiques depuis le nom de fichier (format 'Artiste - Titre')."""
     stem = Path(filename).stem
@@ -229,7 +241,7 @@ class YtdlpService:
 
     def start(self, url: str, params: dict) -> tuple[str, str]:
         """Lance un téléchargement. Retourne (job_id, folder_path)."""
-        job = YtdlpJob(url, params)
+        job = YtdlpJob(_clean_url(url), params)
         with self._lock:
             self._job = job
         job.start()
