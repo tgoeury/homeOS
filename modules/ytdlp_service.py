@@ -125,6 +125,7 @@ class YtdlpJob:
     def _run(self) -> None:
         cmd = self._build_cmd()
         logger.info("YtdlpJob %s: %s", self.id, " ".join(cmd))
+        output_lines: list[str] = []
         try:
             self.process = subprocess.Popen(
                 cmd,
@@ -133,6 +134,9 @@ class YtdlpJob:
                 text=True,
             )
             for line in self.process.stdout:
+                line = line.rstrip()
+                logger.debug("YtdlpJob %s: %s", self.id, line)
+                output_lines.append(line)
                 with self._lock:
                     if self.status == "cancelled":
                         break
@@ -152,7 +156,11 @@ class YtdlpJob:
                     self.progress_pct = 100.0
                     self.progress_str = "Terminé"
                 else:
+                    tail = "\n".join(output_lines[-20:])
+                    logger.error("YtdlpJob %s: returncode=%d\n%s",
+                                 self.id, self.process.returncode, tail)
                     self.status       = "failed"
+                    self.error        = tail
                     self.progress_str = "Erreur yt-dlp (voir logs)"
         except FileNotFoundError:
             with self._lock:
@@ -267,41 +275,48 @@ class YtdlpService:
                         audio = EasyID3()
                         audio.save(fpath)
                         audio = MP3(fpath, ID3=EasyID3)
-                    _apply_easy_tags(audio, tags, single_file)
+                    _apply_audio_tags(audio, tags, single_file, _ID3_KEYS, wrap_in_list=True)
                     audio.save()
                 elif ext == ".flac":
                     audio = FLAC(fpath)
-                    _apply_flac_tags(audio, tags, single_file)
+                    _apply_audio_tags(audio, tags, single_file, _VORBIS_KEYS, wrap_in_list=False)
                     audio.save()
                 logger.debug("apply_tags: %s → OK", fname)
             except Exception as exc:
                 logger.warning("apply_tags: %s — %s", fname, exc)
 
 
-def _apply_easy_tags(audio, tags: dict, single_file: bool) -> None:
-    for ui_key, id3_key in (
-        ("artist",      "artist"),
-        ("albumartist", "albumartist"),
-        ("album",       "album"),
-        ("year",        "date"),
-    ):
-        if tags.get(ui_key):
-            audio[id3_key] = [tags[ui_key]]
-    if single_file and tags.get("title"):
-        audio["title"] = [tags["title"]]
+# Mapping (ui_key, audio_key) pour EasyID3 (MP3) et Vorbis (FLAC).
+# La clé "title" n'est appliquée que si single_file=True.
+_ID3_KEYS = (
+    ("artist",      "artist"),
+    ("albumartist", "albumartist"),
+    ("album",       "album"),
+    ("year",        "date"),
+    ("title",       "title"),
+)
+_VORBIS_KEYS = (
+    ("artist",      "ARTIST"),
+    ("albumartist", "ALBUMARTIST"),
+    ("album",       "ALBUM"),
+    ("year",        "DATE"),
+    ("title",       "TITLE"),
+)
 
 
-def _apply_flac_tags(audio, tags: dict, single_file: bool) -> None:
-    for ui_key, vorbis_key in (
-        ("artist",      "ARTIST"),
-        ("albumartist", "ALBUMARTIST"),
-        ("album",       "ALBUM"),
-        ("year",        "DATE"),
-    ):
+def _apply_audio_tags(audio, tags: dict, single_file: bool,
+                      key_map: tuple, wrap_in_list: bool) -> None:
+    """Applique les métadonnées d'un dict `tags` sur un objet audio mutagen.
+
+    key_map      : séquence de (ui_key, audio_key) adaptée au format (ID3 ou Vorbis).
+    wrap_in_list : True pour EasyID3 (valeurs en liste), False pour FLAC/Vorbis.
+    La clé "title" est ignorée quand single_file=False (album multi-pistes).
+    """
+    for ui_key, audio_key in key_map:
+        if ui_key == "title" and not single_file:
+            continue
         if tags.get(ui_key):
-            audio[vorbis_key] = tags[ui_key]
-    if single_file and tags.get("title"):
-        audio["TITLE"] = tags["title"]
+            audio[audio_key] = [tags[ui_key]] if wrap_in_list else tags[ui_key]
 
 
 ytdlp_service = YtdlpService()

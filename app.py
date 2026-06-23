@@ -6,6 +6,7 @@ Accès     : http://<ip-machine>:<DASH_PORT>
 """
 
 import logging
+import os
 import threading
 from dash import Dash, html
 from flask import request as flask_request
@@ -13,8 +14,9 @@ from flask import request as flask_request
 import config as CFG
 from config import DASH_HOST, DASH_PORT, DASH_DEBUG, HOME_NAME
 
+_LOG_LEVEL = getattr(logging, os.environ.get("HOMEOS_LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )
