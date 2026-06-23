@@ -150,7 +150,8 @@ class DataCache:
 
     # ── Séries temporelles ────────────────────────────────────────────────────
 
-    def log(self, name: str, value, unit: str, source: str) -> None:
+    def log(self, name: str, value, unit: str, source: str,
+            force: bool = False) -> None:
         """
         Enregistre une entrée dans la table history avec write-on-change + heartbeat.
 
@@ -158,6 +159,7 @@ class DataCache:
         où bucket = int(now // LOG_HEARTBEAT_INTERVAL). Cela garantit un point en base
         toutes les 30 min même si la valeur ne change pas, rendant les graphes continus.
         La signature est mémorisée dans la table cache (clé log.last.<name>).
+        force=True : bypass write-on-change, toujours écrire (à utiliser à la source MQTT).
         """
         now     = time.time()
         bucket  = int(now // LOG_HEARTBEAT_INTERVAL)
@@ -166,15 +168,16 @@ class DataCache:
         with self._lock:
             try:
                 with self._connect() as conn:
-                    row = conn.execute(
-                        "SELECT value FROM cache WHERE key=?", (sig_key,)
-                    ).fetchone()
-                    if row and tuple(json.loads(row[0])) == sig_new:
-                        has_data = conn.execute(
-                            "SELECT 1 FROM history WHERE name=? LIMIT 1", (name,)
+                    if not force:
+                        row = conn.execute(
+                            "SELECT value FROM cache WHERE key=?", (sig_key,)
                         ).fetchone()
-                        if has_data:
-                            return
+                        if row and tuple(json.loads(row[0])) == sig_new:
+                            has_data = conn.execute(
+                                "SELECT 1 FROM history WHERE name=? LIMIT 1", (name,)
+                            ).fetchone()
+                            if has_data:
+                                return
                     conn.execute(
                         "INSERT OR REPLACE INTO history (name,ts,source,value,unit) "
                         "VALUES (?,?,?,?,?)",

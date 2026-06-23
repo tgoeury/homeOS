@@ -15,6 +15,7 @@ import threading
 import time
 
 import config as CFG
+from modules.data_cache import data_cache
 from modules.data_logger import data_logger
 
 _PLANT_MAX_AGE = 24 * 3600   # 24 h — les capteurs plantes envoient rarement
@@ -68,17 +69,29 @@ class SensorStore:
             self._data[device].update(payload)
             self._data[device]["_ts"] = time.time()
 
-        # Historique soil_moisture — dynamique pour tout device détecté
+        # Persistance immédiate temp/humidity/luminosité → DB (force=True : toute valeur reçue)
+        dev_cfg = CFG.ZIGBEE_DEVICES.get(device, {})
+        room_id = dev_cfg.get("room")
+        if room_id:
+            dev_type = dev_cfg.get("type", "snzb02p").upper()
+            src = f"{dev_type} · Zigbee2MQTT · {device}"
+            for field, unit in (("temperature", "°C"), ("humidity", "%"), ("luminosity", "lux")):
+                if field in payload:
+                    try:
+                        val = round(float(payload[field]), 1)
+                        data_cache.write(f"sensor.{room_id}.{field}", val, unit, src)
+                        data_cache.log(f"sensor_{room_id}_{field}", val, unit, src, force=True)
+                    except (TypeError, ValueError):
+                        pass
+
+        # Historique soil_moisture — dynamique pour tout device détecté (force=True)
         if "soil_moisture" in payload:
             try:
-                val = float(payload["soil_moisture"])
+                val = round(float(payload["soil_moisture"]), 1)
                 plant_id = self._plant_id_for(device)
-                data_logger.log(
-                    f"plant_{plant_id}_soil_moisture",
-                    round(val, 1),
-                    "%",
-                    f"SGS01Z · Zigbee2MQTT · {device}",
-                )
+                src_plant = f"SGS01Z · Zigbee2MQTT · {device}"
+                data_cache.write(f"plant.{plant_id}.soil_moisture", val, "%", src_plant)
+                data_cache.log(f"plant_{plant_id}_soil_moisture", val, "%", src_plant, force=True)
             except (TypeError, ValueError):
                 pass
 

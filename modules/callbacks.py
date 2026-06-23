@@ -780,7 +780,6 @@ def update_sensors(_n):
     first_hygro = None   # pour home-hygro-int
 
     for room_id, _, _, sensors in ROOMS:
-        src = _sensor_source(room_id)
         _cr = data_cache.read(f"confort.range.{room_id}")
         t_min, t_max = (_cr["value"][0], _cr["value"][1]) if _cr else (CFG.ALERT_TEMP_MIN, CFG.ALERT_TEMP_MAX)
         for sid, _, default, _, _ in sensors:
@@ -792,10 +791,13 @@ def update_sensors(_n):
                 real = sensor_store.get_room_value(room_id, "temperature")
                 if real is not None:
                     val = round(real, 1)
+                else:
+                    entry = data_cache.read(f"sensor.{room_id}.temperature")
+                    val = entry["value"] if entry else None
+                if val is not None:
+                    val = round(float(val), 1)
                     col = _temp_color(val, t_min, t_max)
                     out = html.Span(f"{val}°C", style={"color": col})
-                    data_cache.write(f"sensor.{room_id}.temperature", val, "°C", src)
-                    data_logger.log(f"sensor_{room_id}_temperature", val, "°C", src)
                     if first_temp is None:
                         first_temp = html.Span(f"{val}°", style={"color": col})
                 else:
@@ -805,10 +807,12 @@ def update_sensors(_n):
                 real = sensor_store.get_room_value(room_id, "humidity")
                 if real is not None:
                     val = int(round(real))
+                else:
+                    entry = data_cache.read(f"sensor.{room_id}.humidity")
+                    val = int(round(entry["value"])) if entry else None
+                if val is not None:
                     col = _hygro_color(val)
                     out = html.Span(f"{val}%", style={"color": col})
-                    data_cache.write(f"sensor.{room_id}.humidity", val, "%", src)
-                    data_logger.log(f"sensor_{room_id}_humidity", val, "%", src)
                     if first_hygro is None:
                         first_hygro = html.Span(f"{val}%", style={"color": col})
                 else:
@@ -960,14 +964,25 @@ def _persist_confort_ranges(*ranges):
 
 # ── Tag "OUTDATED" sur les cartes capteurs ────────────────────────────────────
 
-_TAG_STYLE = {
+_TAG_STYLE_BASE = {
     "position": "absolute", "bottom": "6px", "right": "8px",
     "fontSize": "10px", "fontFamily": FONT_MONO,
-    "color": CP["yellow"], "letterSpacing": "2px",
+    "letterSpacing": "2px", "padding": "1px 6px",
+}
+_TAG_STYLE = {
+    **_TAG_STYLE_BASE,
+    "color": CP["yellow"],
     "border": f"1px solid {CP['yellow']}66",
-    "padding": "1px 6px",
+}
+_TAG_STYLE_RED = {
+    **_TAG_STYLE_BASE,
+    "color": CP["red"],
+    "border": f"1px solid {CP['red']}66",
 }
 _TAG_HIDDEN = {"display": "none"}
+
+_OUTDATED_YELLOW_S = 15 * 60   # 15 min → jaune
+_OUTDATED_RED_S    =  3 * 3600  # 3 h   → rouge
 
 if _SENSOR_TAG_MAP:
     @callback(
@@ -976,16 +991,22 @@ if _SENSOR_TAG_MAP:
         Input("interval-main", "n_intervals"),
     )
     def update_sensor_outdated_tags(_n):
-        """Affiche un tag 'OUTDATED' en jaune sur les cartes capteurs dont la donnée est périmée."""
-        _max_delays = getattr(CFG, "MAX_DELAY", {})
+        """Tag OUTDATED jaune (> 15 min) ou rouge (> 3 h) sur les cartes capteurs."""
         now = time.time()
         children_out, styles_out = [], []
-        for sid, (cache_key, dev_type) in _SENSOR_TAG_MAP.items():
-            max_sec = _max_delays.get(dev_type, 15) * 60
-            entry   = data_cache.read(cache_key)
-            if entry and (now - entry["updated_at"]) > max_sec:
-                children_out.append("OUTDATED")
-                styles_out.append(_TAG_STYLE)
+        for sid, (cache_key, _dev_type) in _SENSOR_TAG_MAP.items():
+            entry = data_cache.read(cache_key)
+            if entry:
+                age = now - entry["updated_at"]
+                if age > _OUTDATED_RED_S:
+                    children_out.append("OUTDATED")
+                    styles_out.append(_TAG_STYLE_RED)
+                elif age > _OUTDATED_YELLOW_S:
+                    children_out.append("OUTDATED")
+                    styles_out.append(_TAG_STYLE)
+                else:
+                    children_out.append("")
+                    styles_out.append(_TAG_HIDDEN)
             else:
                 children_out.append("")
                 styles_out.append(_TAG_HIDDEN)
