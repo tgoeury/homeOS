@@ -16,15 +16,15 @@ ZIGBEE_DEVICES_FIXTURE = {
 
 @pytest.fixture
 def store():
-    """SensorStore fraîche avec data_logger et ZIGBEE_DEVICES mockés."""
+    """SensorStore fraîche avec data_cache et ZIGBEE_DEVICES mockés."""
     with (
-        patch("modules.sensor_store.data_logger") as mock_dl,
+        patch("modules.sensor_store.data_cache") as mock_dc,
         patch("modules.sensor_store.CFG") as mock_cfg,
     ):
         mock_cfg.ZIGBEE_DEVICES = ZIGBEE_DEVICES_FIXTURE
         from modules.sensor_store import SensorStore
         s = SensorStore()
-        s._mock_dl = mock_dl
+        s._mock_dc = mock_dc
         yield s
 
 
@@ -70,16 +70,19 @@ class TestUpdate:
         assert "temperature" in d
         assert "humidity" in d
 
-    def test_soil_moisture_calls_data_logger(self, store):
+    def test_soil_moisture_persisted_to_data_cache(self, store):
         store.update("zigbee2mqtt/plant_sensor_1", {"soil_moisture": 42.0, "battery": 98})
-        store._mock_dl.log.assert_called_once()
-        call_args = store._mock_dl.log.call_args
-        assert "plant_ficus_soil_moisture" in call_args[0][0]
-        assert call_args[0][1] == 42.0
+        assert store._mock_dc.log.call_count >= 1
+        logged_series = [c.args[0] for c in store._mock_dc.log.call_args_list]
+        assert any("plant_ficus_soil_moisture" in n for n in logged_series)
+        write_keys = [c.args[0] for c in store._mock_dc.write.call_args_list]
+        assert any("plant.ficus.soil_moisture" in k for k in write_keys)
 
-    def test_temperature_does_not_call_data_logger(self, store):
+    def test_temperature_persisted_to_data_cache(self, store):
         store.update("zigbee2mqtt/salon_sensor", {"temperature": 21.0})
-        store._mock_dl.log.assert_not_called()
+        assert store._mock_dc.log.call_count >= 1
+        logged_series = [c.args[0] for c in store._mock_dc.log.call_args_list]
+        assert any("sensor_salon_temperature" in n for n in logged_series)
 
 
 # ── get_field() ───────────────────────────────────────────────────────────────

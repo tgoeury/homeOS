@@ -6,9 +6,10 @@ Alimentation : mqtt_client appelle sensor_store.update(topic, payload).
 Lecture      : callbacks appellent get_room_value() / get_plant_value().
 Découverte   : unmapped_devices() retourne les appareils non encore configurés.
 
-Historique   : toute valeur soil_moisture reçue est automatiquement journalisée
-               dans data/cache.db (table history, série plant_<id>_soil_moisture),
-               via data_logger.log(). Fonctionne pour les devices mappés et non-mappés.
+Historique   : toute valeur reçue (température, humidité, luminosité, soil_moisture)
+               est immédiatement persistée dans data/cache.db via data_cache.write()
+               (dernière valeur connue) et data_cache.log() (série temporelle).
+               Force=True : bypass write-on-change, chaque message MQTT est enregistré.
 """
 
 import threading
@@ -16,7 +17,6 @@ import time
 
 import config as CFG
 from modules.data_cache import data_cache
-from modules.data_logger import data_logger
 
 _PLANT_MAX_AGE = 24 * 3600   # 24 h — les capteurs plantes envoient rarement
 
