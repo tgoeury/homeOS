@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Bindings VLC requis par python-vlc (ytdlp_service)
     libvlc5 \
     libvlc-dev \
+    # Conversion audio yt-dlp (webm → mp3/flac/…)
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Permet à nmap de faire des pings ICMP sans root via cap_net_raw
