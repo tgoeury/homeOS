@@ -1016,22 +1016,25 @@ if _SENSOR_TAG_MAP:
 # ── Énergie — consommation Enedis ─────────────────────────────────────────────
 
 @callback(
-    Output("energie-hier",     "children"),
-    Output("energie-mois",     "children"),
-    Output("energie-prev",     "children"),
-    Output("energie-graph",    "figure"),
-    Output("energie-unit-btn", "children"),
-    Output("energie-status",   "children"),
-    Input("interval-main",     "n_intervals"),
-    Input("energie-unit-btn",  "n_clicks"),
+    Output("energie-hier",           "children"),
+    Output("energie-mois",           "children"),
+    Output("energie-prev",           "children"),
+    Output("energie-graph",          "figure"),
+    Output("energie-unit-btn",       "children"),
+    Output("energie-status",         "children"),
+    Output("energie-graph-monthly",  "figure"),
+    Input("interval-main",           "n_intervals"),
+    Input("energie-unit-btn",        "n_clicks"),
 )
 def update_energie(_n, n_clicks):
     """
-    Met à jour la page Énergie : stat cards (hier/mois/mois précédent), barplot 30 j.
+    Met à jour la page Énergie : stat cards (hier/mois/mois précédent), barplot 30 j,
+    barplot 12 mois glissants.
     Toggle kWh/€ piloté par n_clicks (pair = kWh, impair = €).
-    Code couleur des barres : rouge ≥ 75e percentile, bleu sinon.
+    Code couleur : rouge ≥ p75, bleu ≤ p75, vert = mois en cours.
     """
     import statistics
+    from collections import defaultdict
 
     rows = enedis_service.read_history()
 
@@ -1053,7 +1056,7 @@ def update_energie(_n, n_clicks):
         status  = _enedis_status_msg()
         empty_fig = go.Figure(layout={**PLOTLY_THEME, "title": {"text": "Aucune donnée disponible",
                               "font": {"color": CP["text_dim"], "size": 13}}})
-        return no_data, no_data, no_data, empty_fig, btn_label, status
+        return no_data, no_data, no_data, empty_fig, btn_label, status, empty_fig
 
     today     = datetime.now().date()
     yesterday = today - timedelta(days=1)
@@ -1119,8 +1122,78 @@ def update_energie(_n, n_clicks):
             annotation_font_size=11,
         )
 
+    # ── Graphique 12 mois glissants ───────────────────────────────────────────
+    _MOIS_FR = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun",
+                "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"]
+
+    # Liste des 13 mois (du plus ancien au plus récent — permet de voir le même mois N-1)
+    months_12: list[tuple[int, int]] = []
+    y_, m_ = today.year, today.month
+    for _ in range(13):
+        months_12.insert(0, (y_, m_))
+        m_ -= 1
+        if m_ == 0:
+            m_, y_ = 12, y_ - 1
+
+    # Agréger les consommations journalières par mois
+    monthly_kwh: dict[tuple[int, int], float] = defaultdict(float)
+    for r in rows:
+        monthly_kwh[(r["date"].year, r["date"].month)] += r["kwh"]
+
+    mo_labels = [f"{_MOIS_FR[mo-1]} {str(yr)[2:]}" for (yr, mo) in months_12]
+    mo_values = [
+        monthly_kwh.get((yr, mo), 0.0) * (price if show_euros else 1.0)
+        for (yr, mo) in months_12
+    ]
+
+    # 75e percentile des valeurs mensuelles pour le code couleur
+    non_zero = [v for v in mo_values if v > 0]
+    if len(non_zero) >= 4:
+        p75_mo = statistics.quantiles(non_zero, n=4)[2]
+    elif non_zero:
+        p75_mo = max(non_zero)
+    else:
+        p75_mo = 0.0
+
+    current_key = (today.year, today.month)
+    mo_colors = []
+    for (yr, mo), v in zip(months_12, mo_values):
+        if (yr, mo) == current_key:
+            mo_colors.append(CP["green"])
+        elif v > p75_mo:
+            mo_colors.append(CP["red"])
+        else:
+            mo_colors.append("#00b4d8")
+
+    fig_monthly = go.Figure(
+        go.Bar(
+            x=mo_labels,
+            y=mo_values,
+            marker_color=mo_colors,
+            hovertemplate=f"%{{x}}<br>%{{y:.2f}} {unit_label}<extra></extra>",
+        )
+    )
+    fig_monthly.update_layout(**{
+        **PLOTLY_THEME,
+        "bargap": 0.25,
+        "margin": {"l": 40, "r": 10, "t": 10, "b": 50},
+        "xaxis":  {**PLOTLY_THEME["xaxis"], "gridcolor": "rgba(255,255,255,0.04)"},
+        "yaxis":  {**PLOTLY_THEME["yaxis"],
+                   "title": unit_label, "ticksuffix": "",
+                   "gridcolor": "rgba(255,255,255,0.06)"},
+    })
+    if non_zero:
+        fig_monthly.add_hline(
+            y=p75_mo,
+            line_dash="dot",
+            line_color="rgba(255,255,255,0.3)",
+            annotation_text=f"p75 : {p75_mo:.2f} {unit_label}",
+            annotation_font_color=CP["text_dim"],
+            annotation_font_size=11,
+        )
+
     status = _enedis_status_msg()
-    return _fmt(hier_kwh), _fmt(mois_kwh), _fmt(prev_kwh), fig, btn_label, status
+    return _fmt(hier_kwh), _fmt(mois_kwh), _fmt(prev_kwh), fig, btn_label, status, fig_monthly
 
 
 def _enedis_kind() -> tuple[str, str]:
