@@ -181,12 +181,20 @@ class PlexClient:
     # ── Stream local (browser audio) ──────────────────────────────────────────
 
     def get_track_data(self, rating_key: str) -> Optional[dict]:
-        """Retourne métadonnées + URL de stream directe pour lecture dans le navigateur."""
+        """Retourne métadonnées + URL de stream directe pour lecture dans le navigateur.
+
+        Retourne None si le rating_key pointe vers un Album ou un Artist
+        (seules les pistes sont directement streamables).
+        """
         server = self._connect()
         if not server or not rating_key:
             return None
         try:
             track = server.fetchItem(int(rating_key))
+            if getattr(track, "type", "") != "track":
+                logger.debug("Plex get_track_data %s : type=%s, attendu 'track'",
+                             rating_key, getattr(track, "type", "?"))
+                return None
             return {
                 **self._track_dict(track),
                 "stream_url": self._part_url(track),
@@ -268,17 +276,32 @@ class PlexClient:
     # ── Contexte album complet (file d'attente prev/next) ────────────────────
 
     def get_album_context(self, rating_key: str) -> dict:
-        """Retourne toutes les pistes de l'album + l'index de la piste actuelle."""
+        """Retourne toutes les pistes de l'album + l'index de la piste actuelle.
+
+        Accepte un rating_key de type 'track' (idx positionné sur la piste)
+        ou 'album' (idx=0, toutes les pistes de l'album retournées).
+        """
         server = self._connect()
         if not server or not rating_key:
             return {"tracks": [], "idx": 0}
         try:
-            track  = server.fetchItem(int(rating_key))
-            album  = track.album()
+            item      = server.fetchItem(int(rating_key))
+            item_type = getattr(item, "type", "")
+            if item_type == "track":
+                album         = item.album()
+                if album is None:
+                    return {"tracks": [], "idx": 0}
+                track_rk_ref  = str(rating_key)
+            elif item_type == "album":
+                album         = item
+                track_rk_ref  = None
+            else:
+                logger.debug("Plex album context %s : type=%s non géré", rating_key, item_type)
+                return {"tracks": [], "idx": 0}
             tracks = []
             idx    = 0
             for i, t in enumerate(album.tracks()):
-                if str(t.ratingKey) == str(rating_key):
+                if track_rk_ref and str(t.ratingKey) == track_rk_ref:
                     idx = i
                 tracks.append({
                     **self._track_dict(t),
