@@ -1072,7 +1072,7 @@ def _page_energie() -> html.Div:
             ),
         ], style=card_style(accent=CP["cyan"])),
 
-        # ── Graphique 12 mois glissants ───────────────────────────────────
+        # ── Graphique 13 mois glissants ───────────────────────────────────
         html.Div([
             dcc.Graph(
                 id="energie-graph-monthly",

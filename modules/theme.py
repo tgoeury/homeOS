@@ -56,6 +56,7 @@ def card_style(accent: str = CP["cyan"], extra: dict = None) -> dict:
         "border": f"1px solid {CP['border']}",
         "borderTop": f"2px solid {accent}",
         "padding": "18px 20px",
+        "marginBottom": "8px",
         "clipPath": "polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px))",
     }
     if extra:

@@ -511,6 +511,11 @@ ul { margin: 0; }
   background: transparent !important;
   white-space: nowrap;
 }
+/* input number aux extrémités — redondants avec les tooltips always_visible */
+.confort-slider-wrap input {
+  display: none;
+}
+
 /* always-visible tooltip bubbles */
 .confort-slider-wrap .dash-slider-tooltip {
   background: var(--bg2) !important;
