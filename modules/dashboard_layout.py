@@ -334,12 +334,16 @@ def _room_panel(room_id: str, room_name: str, accent: str, sensors: list) -> htm
 
     n_total = len(regular) + len(plants)
 
-    sensor_cards = [
-        _metric_card(lbl, sid, dflt, col, unit,
-                     extra={"marginBottom": "8px",
-                            "clipPath": "polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)"})
-        for sid, lbl, dflt, col, unit in regular
-    ]
+    _card_extra = {"marginBottom": "8px",
+                   "clipPath": "polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)"}
+    _has_hygro = any(s[0].endswith("-hygro") for s in regular)
+    sensor_cards = []
+    for sid, lbl, dflt, col, unit in regular:
+        sensor_cards.append(_metric_card(lbl, sid, dflt, col, unit, extra=_card_extra))
+        if sid.endswith("-temp") and _has_hygro:
+            sensor_cards.append(_metric_card(
+                "T° ressentie", f"{room_id}-ressentie", "--°C", col, "", extra=_card_extra,
+            ))
 
     content_children = []
     if sensor_cards:

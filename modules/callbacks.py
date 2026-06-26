@@ -15,6 +15,7 @@ Tous les @callback Dash du dashboard, organisés par domaine :
   Chatbot       — envoi / réception / affichage messages Synology Chat
 """
 
+import math
 import time
 import random
 from datetime import datetime, timedelta
@@ -750,6 +751,38 @@ for _room_id, _, _, _sensors in ROOMS:
 for _pid, *_ in _plant_list:
     _SENSOR_TAG_MAP[_pid] = (f"plant.{_pid}.soil_moisture", "sgs01z")
 
+def _steadman(T: float, H: float) -> float:
+    """Température ressentie (Steadman/Rothfusz simplifié). T en °C, H en % directement."""
+    return (
+        -8.78469475556
+        + 1.61139411      * T
+        + 2.33854883889   * H
+        - 0.14611605      * T * H
+        - 0.012308094     * T ** 2
+        - 0.0164248277778 * H ** 2
+        + 0.002211732     * T ** 2 * H
+        + 0.00072546      * T * H ** 2
+        - 0.000003582     * T ** 2 * H ** 2
+    )
+
+
+def _trend(pts: list[tuple], current: float, threshold: float = 0.5) -> tuple[str, str]:
+    """Compare la valeur courante à la moyenne de la dernière heure (fallback : 2 dernières valeurs).
+    Retourne (symbole, couleur). Symboles : ↑ ↓ ="""
+    hour_ago = datetime.now() - timedelta(hours=1)
+    recent = [v for ts, v in pts if ts >= hour_ago]
+    if len(recent) >= 2:
+        ref = sum(recent) / len(recent)
+    elif len(pts) >= 2:
+        ref = (pts[-2][1] + pts[-1][1]) / 2
+    else:
+        return "", CP["text_dim"]
+    diff = current - ref
+    if abs(diff) < threshold:
+        return "=", CP["text_dim"]
+    return ("↑", CP["red"]) if diff > 0 else ("↓", CP["cyan"])
+
+
 # Outputs construits dynamiquement depuis ROOMS — capteurs plantes exclus (gérés par update_plants)
 _sensor_room_outputs = [
     Output(sid, "children")
@@ -757,6 +790,14 @@ _sensor_room_outputs = [
     for sid, *_ in sensors
     if sid not in _plant_ids
 ]
+
+# Rooms disposant à la fois d'un capteur temp et hygro → température ressentie
+_ressentie_room_ids = [
+    room_id for room_id, _, _, sensors in ROOMS
+    if any(s[0].endswith("-temp")  and s[0] not in _plant_ids for s in sensors)
+    and any(s[0].endswith("-hygro") and s[0] not in _plant_ids for s in sensors)
+]
+_ressentie_outputs = [Output(f"{rid}-ressentie", "children") for rid in _ressentie_room_ids]
 
 
 @callback(
@@ -766,6 +807,7 @@ _sensor_room_outputs = [
     *_sensor_room_outputs,
     Output("env-graph", "figure"),
     Output("env-graph-humidity", "figure"),
+    *_ressentie_outputs,
     Input("interval-main", "n_intervals"),
 )
 def update_sensors(_n):
@@ -774,10 +816,23 @@ def update_sensors(_n):
     Source prioritaire : valeur MQTT fraîche via sensor_store ; affiche '--' si absente.
     Persiste les valeurs fraîches dans data_cache et les journalise dans la table history
     (write-on-change). Construit aussi les graphes 24h température et humidité depuis SQLite.
+    Calcule la température ressentie (Steadman simplifié) et les flèches de tendance.
     """
+    # Pré-chargement de l'historique 24h pour toutes les pièces (réutilisé par les graphes
+    # ET les flèches de tendance — évite de requêter SQLite deux fois par pièce).
+    _hist: dict[tuple[str, str], list[tuple]] = {}
+    for r_id, _, _, _ in ROOMS:
+        for _f in ("temperature", "humidity"):
+            _hist[(r_id, _f)] = _db_history(r_id, _f)
+
     rendered_out = []
     first_temp  = None   # pour home-temp-int (1ère pièce = salon)
     first_hygro = None   # pour home-hygro-int
+    # Stockage des valeurs numériques brutes pour le calcul de ressentie
+    _room_temp: dict[str, float] = {}
+    _room_hygro: dict[str, float] = {}
+
+    _arrow_style = {"marginLeft": "8px", "fontSize": "22px", "lineHeight": "1"}
 
     for room_id, _, _, sensors in ROOMS:
         _cr = data_cache.read(f"confort.range.{room_id}")
@@ -796,8 +851,13 @@ def update_sensors(_n):
                     val = entry["value"] if entry else None
                 if val is not None:
                     val = round(float(val), 1)
+                    _room_temp[room_id] = val
                     col = _temp_color(val, t_min, t_max)
-                    out = html.Span(f"{val}°C", style={"color": col})
+                    sym, arr_col = _trend(_hist[(room_id, "temperature")], val)
+                    out = [
+                        html.Span(f"{val}°C", style={"color": col}),
+                        html.Span(sym, style={**_arrow_style, "color": arr_col}),
+                    ]
                     if first_temp is None:
                         first_temp = html.Span(f"{val}°", style={"color": col})
                 else:
@@ -811,8 +871,13 @@ def update_sensors(_n):
                     entry = data_cache.read(f"sensor.{room_id}.humidity")
                     val = int(round(entry["value"])) if entry else None
                 if val is not None:
+                    _room_hygro[room_id] = float(val)
                     col = _hygro_color(val)
-                    out = html.Span(f"{val}%", style={"color": col})
+                    sym, arr_col = _trend(_hist[(room_id, "humidity")], float(val))
+                    out = [
+                        html.Span(f"{val}%", style={"color": col}),
+                        html.Span(sym, style={**_arrow_style, "color": arr_col}),
+                    ]
                     if first_hygro is None:
                         first_hygro = html.Span(f"{val}%", style={"color": col})
                 else:
@@ -826,9 +891,7 @@ def update_sensors(_n):
 
             rendered_out.append(out)
 
-    # ── Graphes 24h — température et humidité, depuis data/cache.db ─────────────
-    now_dt = datetime.now()
-    cutoff = now_dt - timedelta(hours=24)
+    # ── Graphes 24h — température et humidité ────────────────────────────────────
     _graph_legend = dict(
         orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
         font=dict(size=10, color=CP["text_dim"], family=FONT_MONO),
@@ -842,7 +905,7 @@ def update_sensors(_n):
             (fig,     "temperature", "%{x|%H:%M}  %{y:.1f}°C"),
             (fig_hum, "humidity",    "%{x|%H:%M}  %{y:.0f}%"),
         ):
-            pts = _db_history(r_id, field)
+            pts = _hist[(r_id, field)]
             if not pts:
                 continue
             f_fig.add_trace(go.Scatter(
@@ -862,6 +925,19 @@ def update_sensors(_n):
             "legend":     _graph_legend,
         })
 
+    # ── Températures ressenties (Steadman simplifié, sans vent) ─────────────────
+    _no_data = html.Span("--", style={"color": CP["text_dim"], "fontSize": "32px"})
+    ressentie_out = []
+    for rid in _ressentie_room_ids:
+        T = _room_temp.get(rid)
+        H = _room_hygro.get(rid)
+        if T is not None and H is not None:
+            at = round(_steadman(T, H), 1)
+            col = _temp_color(at, CFG.ALERT_TEMP_MIN, CFG.ALERT_TEMP_MAX)
+            ressentie_out.append(html.Span(f"{at}°C", style={"color": col}))
+        else:
+            ressentie_out.append(_no_data)
+
     return (
         first_temp  or html.Span("--", style={"color": CP["text_dim"]}),
         first_hygro or html.Span("--", style={"color": CP["text_dim"]}),
@@ -869,6 +945,7 @@ def update_sensors(_n):
         *rendered_out,
         fig,
         fig_hum,
+        *ressentie_out,
     )
 
 
