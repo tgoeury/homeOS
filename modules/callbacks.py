@@ -19,6 +19,7 @@ import math
 import time
 import random
 from datetime import datetime, timedelta
+import httpx
 from dash import callback, Output, Input, State, html, no_update, ctx, ALL
 import plotly.graph_objects as go
 
@@ -2374,11 +2375,14 @@ def update_home_status(_n):
 
 # ── Chatbot ────────────────────────────────────────────────────────────────────
 
+CHATBOT_API_URL = getattr(CFG, "CHATBOT_API_URL", "http://localhost:8000")
+
+
 def _render_chat_messages(msgs: list) -> list:
-    """Convertit la liste de messages en composants Dash cyberpunk-stylés."""
+    """Convertit la liste de messages {"role", "text"} en composants Dash cyberpunk-stylés."""
     if not msgs:
         return [html.Div(
-            "// EN ATTENTE DE MESSAGES — CONNEXION SYNOLOGY CHAT...",
+            "// EN ATTENTE DE MESSAGES — POSEZ UNE QUESTION A L'AGENT...",
             style={
                 "fontSize": "13px", "letterSpacing": "2px",
                 "color": CP["text_dim"], "fontFamily": FONT_MONO,
@@ -2387,61 +2391,72 @@ def _render_chat_messages(msgs: list) -> list:
         )]
     children = []
     for msg in msgs:
-        ts   = chatbot_engine.fmt_time(msg["ts"])
-        role = msg["role"]
+        role = msg.get("role", "")
+        text = msg.get("text", "")
         if role == "user":
-            children.append(html.Div([
-                html.Div(msg["text"], style={"margin": "0"}),
-                html.Span(ts, className="chat-bubble__ts"),
-            ], className="chat-bubble chat-bubble--user"))
-        elif role == "bot":
-            children.append(html.Div([
-                html.Div(msg["text"], style={"margin": "0"}),
-                html.Span(ts, className="chat-bubble__ts"),
-            ], className="chat-bubble chat-bubble--bot"))
-        else:  # system
             children.append(html.Div(
-                msg["text"],
+                html.Div(text, style={"margin": "0"}),
+                className="chat-bubble chat-bubble--user",
+            ))
+        elif role == "bot":
+            children.append(html.Div(
+                html.Div(text, style={"margin": "0"}),
+                className="chat-bubble chat-bubble--bot",
+            ))
+        else:
+            children.append(html.Div(
+                text,
                 className="chat-bubble chat-bubble--system",
             ))
     return children
 
 
 @callback(
-    Output("chat-input", "value"),
-    Output("chat-store", "data"),
-    Input("chat-send-btn",  "n_clicks"),
-    Input("chat-input",     "n_submit"),
-    Input("chat-clear-btn", "n_clicks"),
-    State("chat-input",  "value"),
-    State("chat-store",  "data"),
+    Output("chat-input",           "value"),
+    Output("agent-session-id",     "data"),
+    Output("agent-messages-store", "data"),
+    Output("agent-status",         "children"),
+    Input("chat-send-btn",         "n_clicks"),
+    Input("chat-input",            "n_submit"),
+    Input("chat-clear-btn",        "n_clicks"),
+    State("chat-input",            "value"),
+    State("agent-session-id",      "data"),
+    State("agent-messages-store",  "data"),
     prevent_initial_call=True,
 )
-def handle_chat_action(send_clicks, n_submit, clear_clicks, text, store_ver):
-    """Gère l'envoi d'un message et l'effacement du chat."""
-    ver = (store_ver or 0) + 1
+def handle_chat_action(send_clicks, n_submit, clear_clicks, text, session_id, messages):
+    """Gère l'envoi d'un message vers l'API LangGraph et l'effacement du chat."""
+    messages = messages or []
     if ctx.triggered_id == "chat-clear-btn":
-        chatbot_engine.clear_messages()
-        return "", ver
-    # Envoi
+        return "", "", [], ""
+
     if not text or not text.strip():
-        return no_update, no_update
-    processed = logic_engine.process_message(text.strip())
-    chatbot_engine.send_message(processed)
-    reply = logic_engine.generate_reply(processed)
-    if reply:
-        chatbot_engine.add_incoming_message(reply)
-    return "", ver
+        return no_update, no_update, no_update, no_update
+
+    messages = messages + [{"role": "user", "text": text.strip()}]
+    try:
+        r = httpx.post(
+            f"{CHATBOT_API_URL}/chat",
+            json={"message": text.strip(), "session_id": session_id or ""},
+            timeout=120.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+        messages = messages + [{"role": "bot", "text": data["response"]}]
+        return "", data["session_id"], messages, ""
+    except httpx.ConnectError:
+        return "", session_id, messages, "// API INACCESSIBLE — uvicorn demarre ?"
+    except Exception as e:
+        return "", session_id, messages, f"// ERREUR : {e}"
 
 
 @callback(
     Output("chat-messages", "children"),
-    Input("interval-chatbot", "n_intervals"),
-    Input("chat-store", "data"),
+    Input("agent-messages-store", "data"),
 )
-def update_chat_display(_n, _store):
-    """Met à jour l'affichage des messages (polling 2 s + trigger sur action)."""
-    return _render_chat_messages(chatbot_engine.get_messages())
+def update_chat_display(messages):
+    """Met à jour l'affichage des messages depuis le store Dash."""
+    return _render_chat_messages(messages or [])
 
 
 @callback(
@@ -2450,23 +2465,16 @@ def update_chat_display(_n, _store):
     Input("interval-chatbot", "n_intervals"),
 )
 def update_chatbot_badges(_n):
-    """
-    Met à jour les badges CHATBOT et LOGIC dans le topbar.
-    CHATBOT : vert = dernier envoi OK, rouge = échec ou jamais envoyé.
-    LOGIC   : rouge = inopérant, jaune = FORWARD (stub), vert = ML/CLAUDE actif.
-    """
-    logic_ok   = logic_engine.is_operational()
-    logic_mode = logic_engine.get_mode()
-    conn_ok    = chatbot_engine.get_connection_status()
+    """Badge CHATBOT : vert si GET /health répond 200. Badge LOGIC : état du logic_engine."""
+    try:
+        r = httpx.get(f"{CHATBOT_API_URL}/health", timeout=2.0)
+        chatbot_ok = r.status_code == 200
+    except Exception:
+        chatbot_ok = False
 
-    if not logic_ok:
-        lc = CP["red"];   cc = CP["red"]
-    elif logic_mode == LogicMode.FORWARD:
-        lc = CP["yellow"]; cc = CP["green"] if conn_ok else CP["red"]
-    else:
-        lc = CP["green"];  cc = CP["green"] if conn_ok else CP["red"]
-
-    return _dot_style(cc), _dot_style(lc)
+    logic_ok = logic_engine.is_operational()
+    logic_col = CP["green"] if logic_ok else CP["yellow"] if logic_engine.get_mode() == LogicMode.FORWARD else CP["red"]
+    return _dot_style(CP["green"] if chatbot_ok else CP["red"]), _dot_style(logic_col)
 
 
 # ── Data dump — yt-dlp ────────────────────────────────────────────────────────

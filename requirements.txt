@@ -5,6 +5,7 @@ dash>=4.3.0
 gunicorn>=21.2
 plotly>=5.22
 requests>=2.31
+httpx>=0.27          # Client HTTP async (chatbot LangGraph API)
 psutil>=5.9        # métriques système (CPU, RAM, disque, température)
 
 plexapi

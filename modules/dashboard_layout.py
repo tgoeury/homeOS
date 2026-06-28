@@ -1214,18 +1214,19 @@ def _page_systeme() -> html.Div:
 # ── Page Chatbot ───────────────────────────────────────────────────────────────
 
 def _page_chatbot() -> html.Div:
-    """Page Chatbot : interface Synology Chat (webhook entrant + saisie manuelle)."""
+    """Page Chatbot : interface LangGraph Agent via API REST (POST /chat)."""
     return html.Div([
         dcc.Interval(id="interval-chatbot", interval=CFG.INTERVAL_CHATBOT_MS, n_intervals=0),
-        dcc.Store(id="chat-store", data=0),
+        dcc.Store(id="agent-session-id",     data=""),
+        dcc.Store(id="agent-messages-store", data=[]),
 
         # En-tête
         html.Div([
             html.Div([
                 html.Span("// ", style={"color": CP["yellow"]}),
-                html.Span("Synology Chat", style={"color": CP["text_dim"]}),
+                html.Span("LangGraph", style={"color": CP["text_dim"]}),
                 html.Span(" // ", style={"color": CP["yellow"]}),
-                html.Span("Bot Interface", style={"color": CP["cyan"]}),
+                html.Span("Agent HomeOS", style={"color": CP["cyan"]}),
             ], style={
                 "fontSize": "15px", "letterSpacing": "3px",
                 "fontFamily": FONT_MONO,
@@ -1239,7 +1240,15 @@ def _page_chatbot() -> html.Div:
             }),
         ], style={
             "display": "flex", "justifyContent": "space-between",
-            "alignItems": "center", "marginBottom": "12px",
+            "alignItems": "center", "marginBottom": "4px",
+            "flexShrink": "0",
+        }),
+
+        # Statut API (erreurs de connexion)
+        html.Div(id="agent-status", style={
+            "fontFamily": FONT_MONO, "fontSize": "12px",
+            "color": CP["red"], "letterSpacing": "1px",
+            "marginBottom": "8px", "minHeight": "16px",
             "flexShrink": "0",
         }),
 
