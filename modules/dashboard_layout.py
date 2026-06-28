@@ -1219,6 +1219,7 @@ def _page_chatbot() -> html.Div:
         dcc.Interval(id="interval-chatbot", interval=CFG.INTERVAL_CHATBOT_MS, n_intervals=0),
         dcc.Store(id="agent-session-id",     data=""),
         dcc.Store(id="agent-messages-store", data=[]),
+        dcc.Store(id="agent-pending-query",  data=None),
 
         # En-tête
         html.Div([

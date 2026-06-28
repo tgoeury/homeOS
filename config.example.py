@@ -57,6 +57,11 @@ SYNOLOGY_CHAT_WEBHOOK_URL = "https://votre-synology/webapi/..."
 # Token du bot sortant : Intégrations → Bots → Créer un bot sortant → Copier le token
 SYNOLOGY_CHAT_TOKEN       = "VOTRE_TOKEN_BOT"
 
+# ── Chatbot LangGraph ────────────────────────────────────────────────────────
+# En production Docker Compose, utiliser le nom du service (ex. "chatbot").
+# En dev local, remplacer par "http://localhost:8000".
+CHATBOT_API_URL = "http://chatbot:8000"
+
 # ── Seuils d'alerte ───────────────────────────────────────────
 ALERT_TEMP_MIN  = 16.0
 ALERT_TEMP_MAX  = 27.0

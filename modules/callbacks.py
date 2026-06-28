@@ -2412,42 +2412,57 @@ def _render_chat_messages(msgs: list) -> list:
 
 
 @callback(
-    Output("chat-input",           "value"),
-    Output("agent-session-id",     "data"),
-    Output("agent-messages-store", "data"),
-    Output("agent-status",         "children"),
-    Input("chat-send-btn",         "n_clicks"),
-    Input("chat-input",            "n_submit"),
-    Input("chat-clear-btn",        "n_clicks"),
-    State("chat-input",            "value"),
-    State("agent-session-id",      "data"),
-    State("agent-messages-store",  "data"),
+    Output("chat-input",            "value"),
+    Output("agent-messages-store",  "data"),
+    Output("agent-pending-query",   "data"),
+    Output("agent-status",          "children"),
+    Input("chat-send-btn",          "n_clicks"),
+    Input("chat-input",             "n_submit"),
+    Input("chat-clear-btn",         "n_clicks"),
+    State("chat-input",             "value"),
+    State("agent-session-id",       "data"),
+    State("agent-messages-store",   "data"),
     prevent_initial_call=True,
 )
-def handle_chat_action(send_clicks, n_submit, clear_clicks, text, session_id, messages):
-    """Gère l'envoi d'un message vers l'API LangGraph et l'effacement du chat."""
+def handle_chat_input(send_clicks, n_submit, clear_clicks, text, session_id, messages):
+    """Étape 1 : affiche le message utilisateur immédiatement et arme la requête API."""
     messages = messages or []
     if ctx.triggered_id == "chat-clear-btn":
-        return "", "", [], ""
-
+        return "", [], None, ""
     if not text or not text.strip():
         return no_update, no_update, no_update, no_update
+    new_messages = messages + [{"role": "user", "text": text.strip()}]
+    pending = {"text": text.strip(), "session_id": session_id or ""}
+    return "", new_messages, pending, ""
 
-    messages = messages + [{"role": "user", "text": text.strip()}]
+
+@callback(
+    Output("agent-session-id",      "data"),
+    Output("agent-messages-store",  "data", allow_duplicate=True),
+    Output("agent-pending-query",   "data", allow_duplicate=True),
+    Output("agent-status",          "children", allow_duplicate=True),
+    Input("agent-pending-query",    "data"),
+    State("agent-messages-store",   "data"),
+    prevent_initial_call=True,
+)
+def fetch_agent_response(pending, messages):
+    """Étape 2 : appelle POST /chat et ajoute la réponse du LLM au store."""
+    if not pending or not pending.get("text"):
+        return no_update, no_update, no_update, no_update
+    messages = messages or []
     try:
         r = httpx.post(
             f"{CHATBOT_API_URL}/chat",
-            json={"message": text.strip(), "session_id": session_id or ""},
-            timeout=120.0,
+            json={"message": pending["text"], "session_id": pending["session_id"]},
+            timeout=240.0,
         )
         r.raise_for_status()
         data = r.json()
-        messages = messages + [{"role": "bot", "text": data["response"]}]
-        return "", data["session_id"], messages, ""
+        return data["session_id"], messages + [{"role": "bot", "text": data["response"]}], None, ""
     except httpx.ConnectError:
-        return "", session_id, messages, "// API INACCESSIBLE — uvicorn demarre ?"
+        return no_update, messages, None, "// API INACCESSIBLE — uvicorn demarre ?"
     except Exception as e:
-        return "", session_id, messages, f"// ERREUR : {e}"
+        return no_update, messages, None, f"// ERREUR : {e}"
 
 
 @callback(

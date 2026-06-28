@@ -59,4 +59,4 @@ USER appuser
 
 EXPOSE 8050
 
-CMD ["gunicorn", "app:server", "-b", "0.0.0.0:8050", "-w", "1", "--timeout", "120"]
+CMD ["gunicorn", "app:server", "-b", "0.0.0.0:8050", "-w", "1", "--timeout", "300"]
