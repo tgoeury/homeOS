@@ -36,6 +36,9 @@ class SensorStore:
         self._data: dict[str, dict] = {}
         # Cache du mapping device_name → plant_id pour éviter de re-parcourir CFG à chaque message
         self._device_to_plant: dict[str, str | None] = {}
+        # Fenêtre glissante (j, k) par série history : (j_val, j_ts, k_val, k_ts)
+        # j = dernière valeur reçue ; k = avant-dernière
+        self._buf: dict[str, tuple] = {}
 
     def _plant_id_for(self, device: str) -> str:
         """Retourne le plant_id configuré pour ce device, ou l'identifiant sanitisé du device."""
@@ -47,6 +50,36 @@ class SensorStore:
                     break
             self._device_to_plant[device] = plant_id
         return self._device_to_plant[device] or _safe_id(device)
+
+    # ── Fenêtre glissante ─────────────────────────────────────────────────────
+
+    def _buf_step(self, name: str, val_str: str, now: float) -> tuple:
+        """
+        Avance la fenêtre (j, k) pour la série <name>.
+        Retourne ("insert", val_str, now) ou ("update_ts", old_j_ts, now).
+        Doit être appelé sous self._lock.
+
+        Règle :
+          - Si i == j == k : UPDATE le record de j dans history (ts j_ts → now).
+          - Sinon          : INSERT i dans history, décaler k ← j, j ← i.
+        """
+        entry = self._buf.get(name)
+        if entry is None:
+            self._buf[name] = (val_str, now, None, None)
+            return ("insert", val_str, now)
+
+        j_val, j_ts, k_val, k_ts = entry
+
+        if k_val is None:
+            self._buf[name] = (val_str, now, j_val, j_ts)
+            return ("insert", val_str, now)
+
+        if val_str == j_val == k_val:
+            self._buf[name] = (val_str, now, k_val, k_ts)
+            return ("update_ts", j_ts, now)
+
+        self._buf[name] = (val_str, now, j_val, j_ts)
+        return ("insert", val_str, now)
 
     # ── Alimentation ──────────────────────────────────────────────────────────
 
@@ -63,13 +96,13 @@ class SensorStore:
         device = parts[1]
         if device in self._SKIP_DEVICES:
             return
+        now = time.time()
         with self._lock:
             if device not in self._data:
                 self._data[device] = {}
             self._data[device].update(payload)
-            self._data[device]["_ts"] = time.time()
+            self._data[device]["_ts"] = now
 
-        # Persistance immédiate temp/humidity/luminosité → DB (force=True : toute valeur reçue)
         dev_cfg = CFG.ZIGBEE_DEVICES.get(device, {})
         room_id = dev_cfg.get("room")
         if room_id:
@@ -80,18 +113,29 @@ class SensorStore:
                     try:
                         val = round(float(payload[field]), 1)
                         data_cache.write(f"sensor.{room_id}.{field}", val, unit, src)
-                        data_cache.log(f"sensor_{room_id}_{field}", val, unit, src, force=True)
+                        series = f"sensor_{room_id}_{field}"
+                        with self._lock:
+                            action = self._buf_step(series, str(val), now)
+                        if action[0] == "insert":
+                            data_cache.log_raw(series, now, val, unit, src)
+                        else:
+                            data_cache.update_history_ts(series, action[1], now)
                     except (TypeError, ValueError):
                         pass
 
-        # Historique soil_moisture — dynamique pour tout device détecté (force=True)
         if "soil_moisture" in payload:
             try:
                 val = round(float(payload["soil_moisture"]), 1)
                 plant_id = self._plant_id_for(device)
                 src_plant = f"SGS01Z · Zigbee2MQTT · {device}"
                 data_cache.write(f"plant.{plant_id}.soil_moisture", val, "%", src_plant)
-                data_cache.log(f"plant_{plant_id}_soil_moisture", val, "%", src_plant, force=True)
+                series = f"plant_{plant_id}_soil_moisture"
+                with self._lock:
+                    action = self._buf_step(series, str(val), now)
+                if action[0] == "insert":
+                    data_cache.log_raw(series, now, val, "%", src_plant)
+                else:
+                    data_cache.update_history_ts(series, action[1], now)
             except (TypeError, ValueError):
                 pass
 

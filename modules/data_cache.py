@@ -150,6 +150,30 @@ class DataCache:
 
     # ── Séries temporelles ────────────────────────────────────────────────────
 
+    def log_raw(self, name: str, ts: float, value, unit: str, source: str) -> None:
+        """Insère une ligne dans history à un timestamp précis, sans déduplication."""
+        with self._lock:
+            try:
+                with self._connect() as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO history (name,ts,source,value,unit) VALUES (?,?,?,?,?)",
+                        (name, ts, source, str(value), unit),
+                    )
+            except Exception as e:
+                logger.error("DataCache.log_raw(%s): %s", name, e)
+
+    def update_history_ts(self, name: str, old_ts: float, new_ts: float) -> None:
+        """Met à jour le timestamp d'une ligne history (fenêtre glissante capteurs)."""
+        with self._lock:
+            try:
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE OR IGNORE history SET ts=? WHERE name=? AND ts=?",
+                        (new_ts, name, old_ts),
+                    )
+            except Exception as e:
+                logger.error("DataCache.update_history_ts(%s): %s", name, e)
+
     def log(self, name: str, value, unit: str, source: str,
             force: bool = False) -> None:
         """
