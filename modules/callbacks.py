@@ -1499,7 +1499,7 @@ def _build_anomaly_rows() -> list:
     """
     rows = []
     for r_id, r_name, _, r_sensors in ROOMS:
-        for s_id, s_label, _, _, _ in r_sensors:
+        for s_id, s_label, *_ in r_sensors:
             field = _field_from_sid(s_id)
             if field not in ("temperature", "humidity"):
                 continue
