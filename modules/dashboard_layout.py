@@ -85,6 +85,34 @@ def _bar_row(label: str, pct: int, color: str = CP["cyan"],
     ], style={"display": "flex", "alignItems": "center", "gap": "10px", "marginBottom": "12px"})
 
 
+def _not_configured_panel(page_id: str, service_name: str, hint_lines: list[str]) -> html.Div:
+    """Remplace une page dont le service n'est pas configuré dans config.py."""
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.Span("⚙ ", style={"color": CP["yellow"]}),
+                html.Span(service_name.upper(), style={"color": CP["cyan"]}),
+                html.Span(" — service non configuré", style={"color": CP["text_dim"]}),
+            ], style={
+                "fontFamily": FONT_MONO, "fontSize": "15px",
+                "letterSpacing": "3px", "marginBottom": "24px",
+            }),
+            *[html.Div(line, style={
+                "fontFamily": FONT_MONO, "fontSize": "13px",
+                "color": CP["text_dim"], "letterSpacing": "1px",
+                "marginBottom": "8px",
+            }) for line in hint_lines],
+        ], style={
+            **card_style(accent=CP["text_dim"]),
+            "padding": "40px 48px",
+            "maxWidth": "680px",
+        }),
+    ], id=f"page-{page_id}", style={
+        "display": "none", "padding": "16px",
+        "flexDirection": "column", "gap": "0", "overflowY": "auto",
+        "justifyContent": "center", "alignItems": "center",
+    })
+
 
 # ── Topbar ────────────────────────────────────────────────────────────────────
 
@@ -791,6 +819,14 @@ def _ytdlp_section() -> html.Div:
 
 def _page_musique() -> html.Div:
     """Page Musique : lecteur Plex avec file d'attente, recherche, artistes récents, playlists."""
+    if not CFG.PLEX_TOKEN:
+        return _not_configured_panel("musique", "Musique", [
+            "Renseignez PLEX_TOKEN dans config.py pour activer le lecteur Plex.",
+            "PLEX_HOST        : IP ou hostname du serveur Plex",
+            "PLEX_PORT        : port d'accès (défaut 32400)",
+            "PLEX_TOKEN       : token du compte admin (Préférences Plex → Réseau)",
+            "PLEX_SERVER_NAME : nom du serveur tel qu'il apparaît dans Plex",
+        ])
     return html.Div([
 
         # ── 1. Lecteur ──────────────────────────────────────────────────────────
@@ -1066,6 +1102,14 @@ def _page_energie() -> html.Div:
     Graphique   : barplot 30 jours avec code couleur au-dessus/en-dessous du 75e percentile.
     Toggle      : affichage en kWh ou en €.
     """
+    if not (CFG.ENEDIS_TOKEN and CFG.ENEDIS_PRM):
+        return _not_configured_panel("energie", "Énergie", [
+            "Renseignez ENEDIS_TOKEN et ENEDIS_PRM dans config.py pour activer le suivi Enedis.",
+            "Token : https://conso.boris.sh/ → autoriser l'accès à vos données Enedis",
+            "PRM   : identifiant PDL à 14 chiffres, imprimé sur vos factures Enedis",
+            "ELECTRICITY_PRICE_KWH : prix du kWh en € (TTC) pour l'affichage en euros",
+        ])
+
     def _stat_card(label: str, comp_id: str, accent: str) -> html.Div:
         return html.Div([
             html.Div(label, style=label_style()),
@@ -1254,6 +1298,13 @@ def _page_systeme() -> html.Div:
 
 def _page_chatbot() -> html.Div:
     """Page Chatbot : interface LangGraph Agent via API REST (POST /chat)."""
+    if not (CFG.SYNOLOGY_CHAT_WEBHOOK_URL and CFG.CHATBOT_API_URL):
+        return _not_configured_panel("chatbot", "Chatbot", [
+            "Renseignez les variables suivantes dans config.py pour activer le chatbot.",
+            "CHATBOT_API_URL           : URL du service LangGraph (ex : http://localhost:8000)",
+            "SYNOLOGY_CHAT_WEBHOOK_URL : Synology Chat → Intégrations → Webhooks → webhook entrant",
+            "SYNOLOGY_CHAT_TOKEN       : Synology Chat → Intégrations → Bots → bot sortant",
+        ])
     return html.Div([
         dcc.Interval(id="interval-chatbot", interval=CFG.INTERVAL_CHATBOT_MS, n_intervals=0),
         dcc.Store(id="agent-session-id",     data=""),
