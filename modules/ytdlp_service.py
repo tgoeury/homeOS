@@ -30,7 +30,7 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 _PROGRESS_RE = re.compile(
     r"\[download\]\s+([\d.]+)%\s+of\s+~?[\d.]+\S*\s+at\s+([\S]+)\s+ETA\s+([\S]+)"
 )
-_AUDIO_EXTS = frozenset((".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav"))
+_MEDIA_EXTS = frozenset((".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".mp4"))
 
 
 class YtdlpJob:
@@ -55,26 +55,39 @@ class YtdlpJob:
     # ── Construction de la commande ───────────────────────────────────────────
 
     def _build_cmd(self) -> list[str]:
-        fmt          = self.params.get("format", "mp3").lower()
-        quality_ui   = int(self.params.get("quality", 8))
-        quality_ytdlp = str(max(0, 10 - quality_ui))   # UI 10 = meilleure → yt-dlp 0
-        chapters     = bool(self.params.get("chapters", False))
+        fmt      = self.params.get("format", "mp3").lower()
+        chapters = bool(self.params.get("chapters", False))
 
         out_tpl = (
             str(self.folder / "%(section_number)02d - %(section_title)s.%(ext)s")
             if chapters
             else str(self.folder / "%(title)s.%(ext)s")
         )
-        cmd = [
-            "yt-dlp",
-            "--extract-audio",
-            "--audio-format",  fmt,
-            "--audio-quality", quality_ytdlp,
-            "--embed-metadata",
-            "--write-info-json",
-            "--output", out_tpl,
-            "--newline",
-        ]
+
+        if fmt == "mp4":
+            cmd = [
+                "yt-dlp",
+                "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "--embed-metadata",
+                "--write-info-json",
+                "--output", out_tpl,
+                "--newline",
+            ]
+        else:
+            quality_ui    = int(self.params.get("quality", 8))
+            quality_ytdlp = str(max(0, 10 - quality_ui))   # UI 10 = meilleure → yt-dlp 0
+            cmd = [
+                "yt-dlp",
+                "--extract-audio",
+                "--audio-format",  fmt,
+                "--audio-quality", quality_ytdlp,
+                "--embed-metadata",
+                "--write-info-json",
+                "--output", out_tpl,
+                "--newline",
+            ]
+
         if chapters:
             cmd.append("--split-chapters")
         cmd.append(self.url)
@@ -117,7 +130,7 @@ class YtdlpJob:
                 continue
         # Fallback : inférence depuis le nom du premier fichier audio
         for p in sorted(self.folder.iterdir()):
-            if p.suffix.lower() in _AUDIO_EXTS:
+            if p.suffix.lower() in _MEDIA_EXTS:
                 return _infer_tags_from_filename(p.name)
         return {}
 
@@ -150,7 +163,7 @@ class YtdlpJob:
                 if self.process.returncode == 0:
                     self.files = [
                         f.name for f in sorted(self.folder.iterdir())
-                        if f.suffix.lower() in _AUDIO_EXTS
+                        if f.suffix.lower() in _MEDIA_EXTS
                     ]
                     self.metadata     = self._read_metadata()
                     self.status       = "success"

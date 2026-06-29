@@ -659,6 +659,9 @@ def _ytdlp_section() -> html.Div:
                 html.Button("FLAC", id="dl-fmt-flac", n_clicks=0,
                             className="ctrl-btn",
                             style={"fontSize": "11px", "letterSpacing": "1px"}),
+                html.Button("MP4", id="dl-fmt-mp4", n_clicks=0,
+                            className="ctrl-btn",
+                            style={"fontSize": "11px", "letterSpacing": "1px"}),
             ], style={"display": "flex", "alignItems": "center", "gap": "6px"}),
         ], style={"display": "flex", "gap": "24px", "alignItems": "center",
                   "flexWrap": "wrap", "marginBottom": "14px"}),
@@ -729,6 +732,19 @@ def _ytdlp_section() -> html.Div:
                style={**_tag_row, "display": "flex"}),
 
             html.Div([
+                dcc.Checklist(
+                    id="dl-save-device",
+                    options=[{"label": "  Enregistrer sur l'appareil", "value": "save"}],
+                    value=[],
+                    inputStyle={"accentColor": CP["cyan"], "cursor": "pointer"},
+                    labelStyle={
+                        "fontFamily": FONT_MONO, "fontSize": "12px",
+                        "color": CP["cyan"], "letterSpacing": "1px", "cursor": "pointer",
+                    },
+                ),
+            ], style={"marginBottom": "10px"}),
+
+            html.Div([
                 html.Button("■  ANNULER", id="dl-cancel", n_clicks=0,
                             className="ctrl-btn",
                             style={"fontSize": "12px", "letterSpacing": "2px"}),
@@ -745,6 +761,7 @@ def _ytdlp_section() -> html.Div:
         dcc.Store(id="dl-action-store",  data={}),
         dcc.Store(id="dl-state-store",   data={}),
         dcc.Store(id="dl-files-store",   data=[]),
+        dcc.Download(id="dl-download"),
         dcc.Interval(id="interval-ytdlp", interval=1_000, n_intervals=0),
 
     ], style=card_style(accent=CP["yellow"]))

@@ -15,12 +15,18 @@ Tous les @callback Dash du dashboard, organisés par domaine :
   Chatbot       — envoi / réception / affichage messages Synology Chat
 """
 
+import io
+import logging
 import math
 import time
 import random
+import zipfile
 from datetime import datetime, timedelta
+from pathlib import Path
 import httpx
-from dash import callback, Output, Input, State, html, no_update, ctx, ALL
+from dash import callback, dcc, Output, Input, State, html, no_update, ctx, ALL
+
+logger = logging.getLogger(__name__)
 import plotly.graph_objects as go
 
 from modules.theme import CP, FONT_MONO, FONT_HUD, PLOTLY_THEME, WORLDMAP_HEIGHT
@@ -2512,14 +2518,16 @@ _BAR_RESET   = {"height": "100%", "width": "0%",
     Output("dl-chapters",     "className"),
     Output("dl-fmt-mp3",      "className"),
     Output("dl-fmt-flac",     "className"),
+    Output("dl-fmt-mp4",      "className"),
     Input("dl-no-chapters",   "n_clicks"),
     Input("dl-chapters",      "n_clicks"),
     Input("dl-fmt-mp3",       "n_clicks"),
     Input("dl-fmt-flac",      "n_clicks"),
+    Input("dl-fmt-mp4",       "n_clicks"),
     State("dl-params-store",  "data"),
     prevent_initial_call=True,
 )
-def update_dl_params(_cn, _cy, _cm, _cf, params):
+def update_dl_params(_cn, _cy, _cm, _cf, _cv, params):
     """Met à jour les paramètres yt-dlp (chapitres, format) et l'aspect des boutons."""
     params = params or {"chapters": False, "format": "mp3"}
     tid = ctx.triggered_id
@@ -2531,6 +2539,8 @@ def update_dl_params(_cn, _cy, _cm, _cf, params):
         params["format"] = "mp3"
     elif tid == "dl-fmt-flac":
         params["format"] = "flac"
+    elif tid == "dl-fmt-mp4":
+        params["format"] = "mp4"
     _act   = "ctrl-btn ctrl-btn--play"
     _inact = "ctrl-btn"
     return (
@@ -2539,6 +2549,7 @@ def update_dl_params(_cn, _cy, _cm, _cf, params):
         _act if params["chapters"]         else _inact,
         _act if params["format"] == "mp3"  else _inact,
         _act if params["format"] == "flac" else _inact,
+        _act if params["format"] == "mp4"  else _inact,
     )
 
 
@@ -2570,19 +2581,21 @@ def start_download(_n, url, params, quality):
     State("dl-tag-year",        "value"),
     State("dl-tag-title",       "value"),
     State("dl-files-store",     "data"),
+    State("dl-save-device",     "value"),
     prevent_initial_call=True,
 )
-def collect_dl_action(_ok, _cancel, artist, albumartist, album, year, title, files):
+def collect_dl_action(_ok, _cancel, artist, albumartist, album, year, title, files, save_device):
     """Capture l'intention OK / Annuler et les tags saisis vers dl-action-store."""
     return {
-        "action":      "ok" if ctx.triggered_id == "dl-ok" else "cancel",
-        "artist":      artist      or "",
-        "albumartist": albumartist or "",
-        "album":       album       or "",
-        "year":        year        or "",
-        "title":       title       or "",
-        "files":       files       or [],
-        "ts":          time.time(),
+        "action":         "ok" if ctx.triggered_id == "dl-ok" else "cancel",
+        "artist":         artist      or "",
+        "albumartist":    albumartist or "",
+        "album":          album       or "",
+        "year":           year        or "",
+        "title":          title       or "",
+        "files":          files       or [],
+        "save_on_device": bool(save_device),
+        "ts":             time.time(),
     }
 
 
@@ -2601,6 +2614,7 @@ def collect_dl_action(_ok, _cancel, artist, albumartist, album, year, title, fil
     Output("dl-url",             "value"),
     Output("dl-state-store",     "data"),
     Output("dl-files-store",     "data"),
+    Output("dl-download",        "data"),
     Input("interval-ytdlp",      "n_intervals"),
     Input("dl-trigger-store",    "data"),
     Input("dl-action-store",     "data"),
@@ -2620,6 +2634,8 @@ def update_dl_display(_n, trigger, action, state):
     if tid == "dl-action-store" and action and action.get("action"):
         snap  = ytdlp_service.get_snapshot()
         files = action.get("files") or []
+        download_data = no_update
+
         if action["action"] == "ok" and snap:
             ytdlp_service.apply_tags(
                 files, snap["folder"],
@@ -2629,10 +2645,31 @@ def update_dl_display(_n, trigger, action, state):
             )
             data_cache.update_ytdlp_job(snap["id"], "success", files)
             ytdlp_service.clear()
+
+            if action.get("save_on_device") and files:
+                try:
+                    folder_path = Path(snap["folder"])
+                    if len(files) == 1:
+                        fpath = folder_path / files[0]
+                        if fpath.exists():
+                            download_data = dcc.send_file(str(fpath))
+                    else:
+                        buf = io.BytesIO()
+                        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for fname in files:
+                                fpath = folder_path / fname
+                                if fpath.exists():
+                                    zf.write(fpath, fname)
+                        buf.seek(0)
+                        download_data = dcc.send_bytes(buf.read(), "download.zip")
+                except Exception as exc:
+                    logger.warning("dl-save-on-device: %s", exc)
+
         elif action["action"] == "cancel":
             if snap:
                 data_cache.update_ytdlp_job(snap["id"], "cancelled")
             ytdlp_service.cancel()
+
         return (
             _DL_HIDDEN, _BAR_RESET, "Initialisation…",
             _DL_HIDDEN,
@@ -2640,6 +2677,7 @@ def update_dl_display(_n, trigger, action, state):
             _DL_FLEX_ROW,
             False, "",
             {}, [],
+            download_data,
         )
 
     # ── Démarrage ─────────────────────────────────────────────────────────────
@@ -2651,12 +2689,13 @@ def update_dl_display(_n, trigger, action, state):
             no_update,
             True, no_update,
             {"last_status": "running"}, [],
+            no_update,
         )
 
     # ── Polling ───────────────────────────────────────────────────────────────
     snap = ytdlp_service.get_snapshot()
     if snap is None:
-        return (no_update,) * 14
+        return (no_update,) * 15
 
     status = snap["status"]
     pct    = snap["progress_pct"]
@@ -2684,6 +2723,7 @@ def update_dl_display(_n, trigger, action, state):
             _DL_FLEX_ROW if single else _DL_HIDDEN,
             True, no_update,
             {**new_state, "files": files}, files,
+            no_update,
         )
 
     if status == "failed":
@@ -2696,6 +2736,7 @@ def update_dl_display(_n, trigger, action, state):
             no_update,
             False, no_update,
             new_state, no_update,
+            no_update,
         )
 
     return (
@@ -2705,4 +2746,5 @@ def update_dl_display(_n, trigger, action, state):
         no_update,
         no_update, no_update,
         new_state, no_update,
+        no_update,
     )
