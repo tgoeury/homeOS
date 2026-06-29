@@ -35,7 +35,15 @@ class PlexClient:
     def _connect(self) -> Optional[PlexServer]:
         if self._server is None:
             try:
-                self._server = PlexServer(PLEX_URL, config.PLEX_TOKEN)
+                if getattr(config, "PLEX_HOME_USER", ""):
+                    # Managed user (Plex Home) : token admin → switchHomeUser → serveur
+                    from plexapi.myplex import MyPlexAccount
+                    account = MyPlexAccount(token=config.PLEX_TOKEN)
+                    account = account.switchHomeUser(config.PLEX_HOME_USER)
+                    resource = account.resource(config.PLEX_SERVER_NAME)
+                    self._server = resource.connect()
+                else:
+                    self._server = PlexServer(PLEX_URL, config.PLEX_TOKEN)
                 logger.info("Plex connecté : %s v%s", self._server.friendlyName, self._server.version)
             except Exception as e:
                 logger.error("Plex connexion échouée : %s", e)
