@@ -10,6 +10,7 @@ from modules.sysinfo import SYSTEM_LABEL, HOST_INFO
 from modules import timer_service
 from modules.data_cache import data_cache
 import config as CFG
+from version import APP_VERSION
 
 # ROOMS résolu depuis config.py (clés de couleur → valeurs CP)
 ROOMS = [
@@ -1338,7 +1339,7 @@ def build_layout() -> html.Div:
             # Footer avec nom machine dynamique
             html.Div([
                 html.Span(
-                    f"HOMEOS v{CFG.APP_VERSION} // {SYSTEM_LABEL.upper()}",
+                    f"HOMEOS v{APP_VERSION} // {SYSTEM_LABEL.upper()}",
                     style={"fontSize": "12px", "letterSpacing": "2px",
                            "color": "rgba(0,229,255,0.25)", "fontFamily": FONT_MONO},
                 ),

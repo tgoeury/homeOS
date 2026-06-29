@@ -13,6 +13,7 @@ from flask import request as flask_request
 
 import config as CFG
 from config import DASH_HOST, DASH_PORT, DASH_DEBUG, HOME_NAME
+from version import APP_VERSION
 
 _LOG_LEVEL = getattr(logging, os.environ.get("HOMEOS_LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
@@ -23,7 +24,7 @@ logging.basicConfig(
 
 app = Dash(
     __name__,
-    title=f"HomeOS v{CFG.APP_VERSION} — {HOME_NAME}",
+    title=f"HomeOS v{APP_VERSION} — {HOME_NAME}",
     update_title=None,
     suppress_callback_exceptions=True,
 )
