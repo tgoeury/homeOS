@@ -44,6 +44,13 @@ INFLUX_BUCKET = "sensors"
 PLEX_HOST  = "192.168.1.X"
 PLEX_PORT  = 32400
 PLEX_TOKEN = "VOTRE_TOKEN_PLEX"
+# Pour obtenir le token : ajouter un compte géré <homeOS>, puis :
+# from plexapi.myplex import MyPlexAccount
+# account = MyPlexAccount(token=ADMIN_TOKEN)
+## Si un PIN a été défini sur le managed user : switchHomeUser(MANAGED_USER_NAME, pin="1234")
+#user_account = account.switchHomeUser(MANAGED_USER_NAME)
+# user_account.authToken
+
 PLEX_LABEL = f"PLEX · {PLEX_HOST}:{PLEX_PORT}"
 
 # ── NextDNS ───────────────────────────────────────────────────
