@@ -56,9 +56,10 @@ _plant_ids = frozenset(cfg["plant"] for cfg in CFG.ZIGBEE_DEVICES.values() if "p
 _plant_list = [
     (sid, lbl, dflt, col)
     for _, _, _, sensors in ROOMS
-    for sid, lbl, dflt, col, unit in sensors
+    for sid, lbl, dflt, col, unit, *_ in sensors
     if sid in _plant_ids
 ]
+
 
 _START_TIME = time.time()   # uptime applicatif (depuis le lancement du process)
 DAYS_FR = ["LUN", "MAR", "MER", "JEU", "VEN", "SAM", "DIM"]
@@ -751,12 +752,22 @@ for _room_id, _, _, _sensors in ROOMS:
          if cfg.get("room") == _room_id),
         "snzb02p",
     )
-    for _sid, _, _, _, _ in _sensors:
+    for _sid, _, _, _, _, *_ in _sensors:
         _f = _field_from_sid(_sid)
         if _f != "unknown":
             _SENSOR_TAG_MAP[_sid] = (f"sensor.{_room_id}.{_f}", _room_type)
 for _pid, *_ in _plant_list:
     _SENSOR_TAG_MAP[_pid] = (f"plant.{_pid}.soil_moisture", "sgs01z")
+
+# Mapping landing_pos → (room_id, field) pour les cartes métriques de l'accueil
+_landing_map: dict[int, tuple[str, str]] = {}
+for _lroom_id, _, _, _lsensors in ROOMS:
+    for _lsid, _, _, _, _, _lpos in _lsensors:
+        if 1 <= _lpos <= 3:
+            _lf = _field_from_sid(_lsid)
+            if _lf != "unknown":
+                _landing_map[_lpos] = (_lroom_id, _lf)
+_landing_outputs = [Output(f"home-landing-{pos}", "children") for pos in sorted(_landing_map)]
 
 def _steadman(T: float, H: float) -> float:
     """Température ressentie (Steadman/Rothfusz simplifié). T en °C, H en % directement."""
@@ -808,9 +819,7 @@ _ressentie_outputs = [Output(f"{rid}-ressentie", "children") for rid in _ressent
 
 
 @callback(
-    Output("home-temp-int",  "children"),
-    Output("home-hygro-int", "children"),
-    Output("home-lux",       "children"),
+    *_landing_outputs,
     *_sensor_room_outputs,
     Output("env-graph", "figure"),
     Output("env-graph-humidity", "figure"),
@@ -833,18 +842,18 @@ def update_sensors(_n):
             _hist[(r_id, _f)] = _db_history(r_id, _f)
 
     rendered_out = []
-    first_temp  = None   # pour home-temp-int (1ère pièce = salon)
-    first_hygro = None   # pour home-hygro-int
+    _landing_vals: dict[int, object] = {}  # landing_pos → valeur pour home-landing-{pos}
     # Stockage des valeurs numériques brutes pour le calcul de ressentie
     _room_temp: dict[str, float] = {}
     _room_hygro: dict[str, float] = {}
 
     _arrow_style = {"marginLeft": "8px", "fontSize": "22px", "lineHeight": "1"}
+    _dim = {"color": CP["text_dim"]}
 
     for room_id, _, _, sensors in ROOMS:
         _cr = data_cache.read(f"confort.range.{room_id}")
         t_min, t_max = (_cr["value"][0], _cr["value"][1]) if _cr else (CFG.ALERT_TEMP_MIN, CFG.ALERT_TEMP_MAX)
-        for sid, _, default, _, _ in sensors:
+        for sid, _, default, _, _, landing_pos in sensors:
             if sid in _plant_ids:
                 continue  # handled by update_plants
             field = _field_from_sid(sid)
@@ -865,10 +874,10 @@ def update_sensors(_n):
                         html.Span(f"{val}°C", style={"color": col}),
                         html.Span(sym, style={**_arrow_style, "color": arr_col}),
                     ]
-                    if first_temp is None:
-                        first_temp = html.Span(f"{val}°", style={"color": col})
+                    if landing_pos > 0:
+                        _landing_vals[landing_pos] = html.Span(f"{val}°", style={"color": col})
                 else:
-                    out = html.Span("--", style={"color": CP["text_dim"]})
+                    out = html.Span("--", style=_dim)
 
             elif field == "humidity":
                 real = sensor_store.get_room_value(room_id, "humidity")
@@ -885,10 +894,10 @@ def update_sensors(_n):
                         html.Span(f"{val}%", style={"color": col}),
                         html.Span(sym, style={**_arrow_style, "color": arr_col}),
                     ]
-                    if first_hygro is None:
-                        first_hygro = html.Span(f"{val}%", style={"color": col})
+                    if landing_pos > 0:
+                        _landing_vals[landing_pos] = html.Span(f"{val}%", style={"color": col})
                 else:
-                    out = html.Span("--", style={"color": CP["text_dim"]})
+                    out = html.Span("--", style=_dim)
 
             elif field == "luminosity":
                 out = "--"
@@ -945,10 +954,9 @@ def update_sensors(_n):
         else:
             ressentie_out.append(_no_data)
 
+    _no_landing = html.Span("--", style={"color": CP["text_dim"]})
     return (
-        first_temp  or html.Span("--", style={"color": CP["text_dim"]}),
-        first_hygro or html.Span("--", style={"color": CP["text_dim"]}),
-        "--",
+        *[_landing_vals.get(pos, _no_landing) for pos in sorted(_landing_map)],
         *rendered_out,
         fig,
         fig_hum,

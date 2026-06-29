@@ -12,12 +12,22 @@ from modules.data_cache import data_cache
 import config as CFG
 from version import APP_VERSION
 
-# ROOMS résolu depuis config.py (clés de couleur → valeurs CP)
+# ROOMS résolu depuis config.py (clés de couleur → valeurs CP, landing_pos normalisé à 0)
+def _resolve_sensor(s: tuple) -> tuple:
+    sid, lbl, dflt, col_key, unit = s[:5]
+    return (sid, lbl, dflt, CP[col_key], unit, s[5] if len(s) > 5 else 0)
+
 ROOMS = [
-    (rid, rname, CP[accent_key],
-     [(sid, lbl, dflt, CP[col_key], unit) for sid, lbl, dflt, col_key, unit in sensors])
+    (rid, rname, CP[accent_key], [_resolve_sensor(s) for s in sensors])
     for rid, rname, accent_key, sensors in CFG.ROOMS
 ]
+
+# Capteurs à afficher sur la page d'accueil, indexés par landing_pos (1-3)
+_LANDING_SENSORS: dict[int, tuple] = {}
+for _rid, _rname, _, _rsensors in ROOMS:
+    for _sid, _lbl, _dflt, _col, _unit, _lpos in _rsensors:
+        if 1 <= _lpos <= 3:
+            _LANDING_SENSORS[_lpos] = (_sid, _lbl, _rname, _dflt, _col, _unit)
 
 # IDs des capteurs plantes : tous les "plant" renseignés dans ZIGBEE_DEVICES
 _PLANT_IDS = frozenset(
@@ -186,6 +196,24 @@ def _nav() -> html.Div:
 
 # ── Page Accueil ──────────────────────────────────────────────────────────────
 
+_CLIP_CARD = "polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%)"
+
+
+def _build_landing_cards() -> list:
+    """Génère les cartes métriques de l'accueil selon landing_pos défini dans config.ROOMS."""
+    positions = sorted(_LANDING_SENSORS)
+    cards = []
+    for i, pos in enumerate(positions):
+        sid, lbl, room_name, dflt, col, unit = _LANDING_SENSORS[pos]
+        extra = {"clipPath": _CLIP_CARD}
+        if i < len(positions) - 1:
+            extra["marginBottom"] = "10px"
+        cards.append(_metric_card(
+            f"{lbl} — {room_name}", f"home-landing-{pos}", dflt, col, unit, extra=extra,
+        ))
+    return cards
+
+
 def _page_accueil() -> html.Div:
     """Page d'accueil : météo extérieure, métriques intérieures, lecteur miroir, journal, devices."""
     return html.Div([
@@ -225,18 +253,11 @@ def _page_accueil() -> html.Div:
 
             ], style={"flex": "2", "display": "flex", "flexDirection": "column", "gap": "12px"}),
 
-            # Métriques intérieures
-            html.Div([
-                _metric_card("Temp. Salon",  "home-temp-int", "--",  CP["cyan"],
-                             "SALON · SNZB-02P",
-                             extra={"marginBottom": "10px", "clipPath": "polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%)"}),
-                _metric_card("Hygrométrie",  "home-hygro-int", "--",   CP["yellow"],
-                             "SALON · SNZB-02P",
-                             extra={"marginBottom": "10px", "clipPath": "polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%)"}),
-                _metric_card("Luminosité",   "home-lux",      "--", CP["green"],
-                             "BUREAU · pas de capteur lux",
-                             extra={"clipPath": "polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,0 100%)"}),
-            ], style={"flex": "1", "display": "flex", "flexDirection": "column"}),
+            # Métriques intérieures (configurées via landing_pos dans config.py)
+            html.Div(
+                _build_landing_cards(),
+                style={"flex": "1", "display": "flex", "flexDirection": "column"},
+            ),
 
         ], style={"display": "flex", "gap": "12px", "marginBottom": "12px"}),
 
@@ -288,7 +309,7 @@ def _plant_subsection(room_id: str, accent: str, plants: list) -> html.Div:
     plants — liste de (sid, lbl, dflt, col, unit) filtrée sur les capteurs plantes.
     """
     n = len(plants)
-    plant_cards = [_plant_card(sid, lbl, dflt, col) for sid, lbl, dflt, col, _ in plants]
+    plant_cards = [_plant_card(sid, lbl, dflt, col) for sid, lbl, dflt, col, *_ in plants]
     return html.Div([
         html.Button([
             html.Span("🌿  PLANTES", style={
@@ -328,9 +349,9 @@ def _room_panel(room_id: str, room_name: str, accent: str, sensors: list) -> htm
     Les capteurs plantes (IDs dans `_PLANT_IDS`) sont rendus dans une sous-section
     collapsible dédiée, imbriquée en bas du panneau.
     """
-    regular = [(sid, lbl, dflt, col, unit) for sid, lbl, dflt, col, unit in sensors
+    regular = [(sid, lbl, dflt, col, unit) for sid, lbl, dflt, col, unit, *_ in sensors
                if sid not in _PLANT_IDS]
-    plants  = [(sid, lbl, dflt, col, unit) for sid, lbl, dflt, col, unit in sensors
+    plants  = [(sid, lbl, dflt, col, unit) for sid, lbl, dflt, col, unit, *_ in sensors
                if sid in _PLANT_IDS]
 
     n_total = len(regular) + len(plants)
@@ -339,7 +360,7 @@ def _room_panel(room_id: str, room_name: str, accent: str, sensors: list) -> htm
                    "clipPath": "polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)"}
     _has_hygro = any(s[0].endswith("-hygro") for s in regular)
     sensor_cards = []
-    for sid, lbl, dflt, col, unit in regular:
+    for sid, lbl, dflt, col, unit in regular:  # regular est déjà un 5-tuple (landing_pos écarté)
         sensor_cards.append(_metric_card(lbl, sid, dflt, col, unit, extra=_card_extra))
         if sid.endswith("-temp") and _has_hygro:
             sensor_cards.append(_metric_card(
