@@ -29,10 +29,14 @@ class PlexClient:
 
     def __init__(self):
         self._server: Optional[PlexServer] = None
+        self._admin_server: Optional[PlexServer] = None
 
     # ── Connexion ──────────────────────────────────────────────────────────────
 
     def _connect(self) -> Optional[PlexServer]:
+        """Connexion scopée au managed user (PLEX_HOME_USER) : utilisée pour parcourir
+        la bibliothèque (search, playlists, artistes, albums), limitée aux dossiers
+        partagés avec ce user (Musique)."""
         if self._server is None:
             try:
                 if getattr(config, "PLEX_HOME_USER", ""):
@@ -49,8 +53,22 @@ class PlexClient:
                 logger.error("Plex connexion échouée : %s", e)
         return self._server
 
+    def _connect_admin(self) -> Optional[PlexServer]:
+        """Connexion directe avec le token admin. Requise pour les endpoints réservés
+        au propriétaire du serveur (/status/sessions, /clients) — un managed user,
+        même non restreint, y reçoit toujours un 401."""
+        if self._admin_server is None:
+            try:
+                self._admin_server = PlexServer(PLEX_URL, config.PLEX_TOKEN)
+            except Exception as e:
+                logger.error("Plex connexion admin échouée : %s", e)
+        return self._admin_server
+
     def _reset(self):
         self._server = None
+
+    def _reset_admin(self):
+        self._admin_server = None
 
     def thumb_url(self, thumb: str) -> str:
         """Construit l'URL absolue d'une miniature Plex en ajoutant le token d'auth."""
@@ -83,7 +101,7 @@ class PlexClient:
         Retourne les métadonnées de la session en cours, ou None si aucune lecture.
         Dict : title, artist, album, thumb, duration_ms, position_ms, state.
         """
-        server = self._connect()
+        server = self._connect_admin()
         if not server:
             return None
         try:
@@ -102,7 +120,7 @@ class PlexClient:
             }
         except Exception as e:
             logger.error("Plex sessions : %s", e)
-            self._reset()
+            self._reset_admin()
             return None
 
     # ── Recherche ──────────────────────────────────────────────────────────────
@@ -326,10 +344,11 @@ class PlexClient:
     def play_item(self, rating_key: str, shuffle: int = 0) -> bool:
         """Lance la lecture via une PlayQueue (piste, album, artiste ou playlist)."""
         server = self._connect()
-        if not server or not rating_key:
+        admin  = self._connect_admin()
+        if not server or not admin or not rating_key:
             return False
         try:
-            clients = server.clients()
+            clients = admin.clients()
             if not clients:
                 logger.warning("Plex : aucun client actif pour play_item")
                 return False
@@ -342,13 +361,14 @@ class PlexClient:
         except Exception as e:
             logger.error("Plex play_item %s : %s", rating_key, e)
             self._reset()
+            self._reset_admin()
             return False
 
     # ── Contrôle ───────────────────────────────────────────────────────────────
 
     def send_command(self, cmd: str) -> bool:
         """Envoie une commande (play/pause/stop/skipNext/skipPrevious) au premier client Plex."""
-        server = self._connect()
+        server = self._connect_admin()
         if not server:
             return False
         try:
@@ -360,6 +380,7 @@ class PlexClient:
             return True
         except Exception as e:
             logger.error("Plex commande %s : %s", cmd, e)
+            self._reset_admin()
             return False
 
 
