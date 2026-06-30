@@ -913,33 +913,38 @@ def update_sensors(_n):
         font=dict(size=10, color=CP["text_dim"], family=FONT_MONO),
         bgcolor="rgba(0,0,0,0)", borderwidth=0,
     )
-    fig     = go.Figure()
-    fig_hum = go.Figure()
+    # Figures retournées comme dicts plain plutôt que go.Figure : Dash les sérialise
+    # en JSON de toute façon, la validation/normalisation de go.Figure est du pur
+    # surcoût (~57 ms/tick pour ces deux graphes) jeté ensuite. Cf. micro-bench round 2.
+    _graph_layout = {
+        **PLOTLY_THEME,
+        "height":     180,
+        "showlegend": True,
+        "legend":     _graph_legend,
+    }
+    fig_data:     list = []
+    fig_hum_data: list = []
 
     for r_id, r_name, r_accent, _ in ROOMS:
-        for f_fig, field, hover_fmt in (
-            (fig,     "temperature", "%{x|%H:%M}  %{y:.1f}°C"),
-            (fig_hum, "humidity",    "%{x|%H:%M}  %{y:.0f}%"),
+        for data_list, field, hover_fmt in (
+            (fig_data,     "temperature", "%{x|%H:%M}  %{y:.1f}°C"),
+            (fig_hum_data, "humidity",    "%{x|%H:%M}  %{y:.0f}%"),
         ):
             pts = _hist[(r_id, field)]
             if not pts:
                 continue
-            f_fig.add_trace(go.Scatter(
-                x=[ts for ts, _ in pts],
-                y=[v  for _, v  in pts],
-                mode="lines",
-                name=r_name,
-                line=dict(color=r_accent, width=2),
-                hovertemplate=f"<b>{r_name}</b><br>{hover_fmt}<extra></extra>",
-            ))
+            data_list.append({
+                "type": "scatter",
+                "x": [ts for ts, _ in pts],
+                "y": [v  for _, v  in pts],
+                "mode": "lines",
+                "name": r_name,
+                "line": {"color": r_accent, "width": 2},
+                "hovertemplate": f"<b>{r_name}</b><br>{hover_fmt}<extra></extra>",
+            })
 
-    for f_fig in (fig, fig_hum):
-        f_fig.update_layout(**{
-            **PLOTLY_THEME,
-            "height":     180,
-            "showlegend": True,
-            "legend":     _graph_legend,
-        })
+    fig     = {"data": fig_data,     "layout": _graph_layout}
+    fig_hum = {"data": fig_hum_data, "layout": _graph_layout}
 
     # ── Températures ressenties (Steadman simplifié, sans vent) ─────────────────
     _no_data = html.Span("--", style={"color": CP["text_dim"], "fontSize": "32px"})
@@ -1107,6 +1112,20 @@ if _SENSOR_TAG_MAP:
 
 # ── Énergie — consommation Enedis ─────────────────────────────────────────────
 
+def _hline_shape(y: float) -> dict:
+    """Réplique la shape produite par fig.add_hline (ligne horizontale pleine largeur)."""
+    return {"type": "line", "xref": "x domain", "yref": "y",
+            "x0": 0, "x1": 1, "y0": y, "y1": y,
+            "line": {"color": "rgba(255,255,255,0.3)", "dash": "dot"}}
+
+
+def _hline_annot(y: float, text: str) -> dict:
+    """Réplique l'annotation produite par fig.add_hline (label à droite de la ligne)."""
+    return {"xref": "x domain", "yref": "y", "x": 1, "y": y,
+            "xanchor": "right", "yanchor": "bottom", "showarrow": False,
+            "text": text, "font": {"color": CP["text_dim"], "size": 11}}
+
+
 @callback(
     Output("energie-hier",           "children"),
     Output("energie-mois",           "children"),
@@ -1146,8 +1165,9 @@ def update_energie(_n, n_clicks):
     if not rows:
         no_data = html.Span("—", style={"color": CP["text_dim"]})
         status  = _enedis_status_msg()
-        empty_fig = go.Figure(layout={**PLOTLY_THEME, "title": {"text": "Aucune donnée disponible",
-                              "font": {"color": CP["text_dim"], "size": 13}}})
+        empty_fig = {"data": [], "layout": {**PLOTLY_THEME,
+                     "title": {"text": "Aucune donnée disponible",
+                               "font": {"color": CP["text_dim"], "size": 13}}}}
         return no_data, no_data, no_data, empty_fig, btn_label, status, empty_fig
 
     today     = datetime.now().date()
@@ -1184,15 +1204,8 @@ def update_energie(_n, n_clicks):
 
     colors = [CP["red"] if v >= p75 else "#00b4d8" for v in values]
 
-    fig = go.Figure(
-        go.Bar(
-            x=dates,
-            y=values,
-            marker_color=colors,
-            hovertemplate=f"%{{x}}<br>%{{y:.2f}} {unit_label}<extra></extra>",
-        )
-    )
-    fig.update_layout(**{
+    # Figure en dict plain (cf. round 2) — évite la validation go.Figure/add_hline.
+    fig_layout = {
         **PLOTLY_THEME,
         "bargap": 0.2,
         "margin": {"l": 40, "r": 10, "t": 10, "b": 50},
@@ -1202,17 +1215,16 @@ def update_energie(_n, n_clicks):
         "yaxis":  {**PLOTLY_THEME["yaxis"],
                    "title": unit_label, "ticksuffix": "",
                    "gridcolor": "rgba(255,255,255,0.06)"},
-    })
-    # Ligne de référence 75e percentile
+    }
     if values:
-        fig.add_hline(
-            y=p75,
-            line_dash="dot",
-            line_color="rgba(255,255,255,0.3)",
-            annotation_text=f"p75 : {p75:.2f} {unit_label}",
-            annotation_font_color=CP["text_dim"],
-            annotation_font_size=11,
-        )
+        # Ligne de référence 75e percentile
+        fig_layout["shapes"]      = [_hline_shape(p75)]
+        fig_layout["annotations"] = [_hline_annot(p75, f"p75 : {p75:.2f} {unit_label}")]
+    fig = {"data": [{
+        "type": "bar", "x": dates, "y": values,
+        "marker": {"color": colors},
+        "hovertemplate": f"%{{x}}<br>%{{y:.2f}} {unit_label}<extra></extra>",
+    }], "layout": fig_layout}
 
     # ── Graphique 12 mois glissants ───────────────────────────────────────────
     _MOIS_FR = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun",
@@ -1257,15 +1269,7 @@ def update_energie(_n, n_clicks):
         else:
             mo_colors.append("#00b4d8")
 
-    fig_monthly = go.Figure(
-        go.Bar(
-            x=mo_labels,
-            y=mo_values,
-            marker_color=mo_colors,
-            hovertemplate=f"%{{x}}<br>%{{y:.2f}} {unit_label}<extra></extra>",
-        )
-    )
-    fig_monthly.update_layout(**{
+    fig_monthly_layout = {
         **PLOTLY_THEME,
         "bargap": 0.25,
         "margin": {"l": 40, "r": 10, "t": 10, "b": 50},
@@ -1273,16 +1277,15 @@ def update_energie(_n, n_clicks):
         "yaxis":  {**PLOTLY_THEME["yaxis"],
                    "title": unit_label, "ticksuffix": "",
                    "gridcolor": "rgba(255,255,255,0.06)"},
-    })
+    }
     if non_zero:
-        fig_monthly.add_hline(
-            y=p75_mo,
-            line_dash="dot",
-            line_color="rgba(255,255,255,0.3)",
-            annotation_text=f"p75 : {p75_mo:.2f} {unit_label}",
-            annotation_font_color=CP["text_dim"],
-            annotation_font_size=11,
-        )
+        fig_monthly_layout["shapes"]      = [_hline_shape(p75_mo)]
+        fig_monthly_layout["annotations"] = [_hline_annot(p75_mo, f"p75 : {p75_mo:.2f} {unit_label}")]
+    fig_monthly = {"data": [{
+        "type": "bar", "x": mo_labels, "y": mo_values,
+        "marker": {"color": mo_colors},
+        "hovertemplate": f"%{{x}}<br>%{{y:.2f}} {unit_label}<extra></extra>",
+    }], "layout": fig_monthly_layout}
 
     status = _enedis_status_msg()
     return _fmt(hier_kwh), _fmt(mois_kwh), _fmt(prev_kwh), fig, btn_label, status, fig_monthly
@@ -1322,6 +1325,13 @@ def _enedis_status_msg() -> str:
 # ── Système réel ───────────────────────────────────────────────────────────────
 
 _MQTT_COUNT = 4382  # simulé — à remplacer par lecture broker MQTT
+
+# Cache TTL des sondes de services (systemctl/process/TCP). Ces sondes font du fork
+# subprocess + connexions socket bloquantes ; leur résultat change très rarement.
+# Inutile de les exécuter à chaque tick (8 s) — un rafraîchissement toutes les 60 s
+# suffit largement pour un affichage d'état. Sur RPi, évite ~8 forks systemctl/8 s.
+_SVC_PROBE_TTL = 60.0
+_svc_probe_cache: dict = {"ts": 0.0, "data": None}
 
 @callback(
     Output("bar-cpu",      "style"),
@@ -1387,13 +1397,26 @@ def update_system(_n):
     chat_ok = chatbot_engine.get_connection_status()
     ml_mode = logic_engine.get_mode()
 
+    # Sondes I/O (systemctl/process/TCP) servies depuis un cache TTL : on ne refork
+    # pas de subprocess à chaque tick. Les entrées en mémoire (chat, ml, comfort,
+    # enedis) restent recalculées à chaque appel car elles sont quasi gratuites.
+    now = time.time()
+    if now - _svc_probe_cache["ts"] >= _SVC_PROBE_TTL or _svc_probe_cache["data"] is None:
+        _svc_probe_cache["data"] = [
+            ("mosquitto",
+             _probe("mosquitto",        "mosquitto",   "localhost",    CFG.MQTT_BROKER_PORT)),
+            ("influxdb",
+             _probe("influxdb",         "influxd",     "localhost",    8086)),
+            ("plex",
+             _probe("plexmediaserver",  "plex",        CFG.PLEX_HOST,  CFG.PLEX_PORT)),
+        ]
+        _svc_probe_cache["ts"] = now
+    _probed = _svc_probe_cache["data"]
+
     services_data = [
-        ("mosquitto",
-         *_probe("mosquitto",        "mosquitto",   "localhost",    CFG.MQTT_BROKER_PORT)),
-        ("influxdb",
-         *_probe("influxdb",         "influxd",     "localhost",    8086)),
-        ("plex",
-         *_probe("plexmediaserver",  "plex",        CFG.PLEX_HOST,  CFG.PLEX_PORT)),
+        ("mosquitto", *_probed[0][1]),
+        ("influxdb",  *_probed[1][1]),
+        ("plex",      *_probed[2][1]),
         ("homeos-dash",  "ok",  "UP"),
         ("synology-chat",
          "ok"   if chat_ok else "warn",

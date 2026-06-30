@@ -24,16 +24,40 @@ API publique : model_status(), run_inference(), RoomPlan
 """
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-import onnxruntime as ort
-import pandas as pd
 import requests
+
+
+class _LazyModule:
+    """Proxy d'import paresseux : le module sous-jacent n'est réellement importé
+    qu'au premier accès attribut. numpy + onnxruntime + pandas pèsent ~65 MB de RSS
+    et ne servent QUE pendant l'inférence confort (déclenchée à la demande par
+    l'utilisateur, jamais dans le steady-state). Sur RPi 3 (1 Go RAM), les charger
+    en permanence au démarrage est du gaspillage. Tous les usages `np.`/`pd.`/`ort.`
+    restent inchangés ; les annotations `pd.DataFrame` sont des chaînes (cf.
+    `from __future__ import annotations`) donc jamais évaluées à l'import."""
+
+    def __init__(self, name: str):
+        object.__setattr__(self, "_lazy_name", name)
+        object.__setattr__(self, "_lazy_mod", None)
+
+    def __getattr__(self, attr):
+        mod = object.__getattribute__(self, "_lazy_mod")
+        if mod is None:
+            mod = importlib.import_module(object.__getattribute__(self, "_lazy_name"))
+            object.__setattr__(self, "_lazy_mod", mod)
+        return getattr(mod, attr)
+
+
+np  = _LazyModule("numpy")
+ort = _LazyModule("onnxruntime")
+pd  = _LazyModule("pandas")
 
 from modules.data_cache import data_cache
 
