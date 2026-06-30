@@ -2,8 +2,7 @@
 config.py
 
 # ── Base de données & données persistantes ────────────────────────────────────
-data/cache.db
-data/downloads/
+data/
 
 # ── Models DL ─────────────────────────────────────────────────────────────────
 models/full.onnx
@@ -52,6 +51,9 @@ models/limited.onnx
 .gitignore
 config_dashboard.py
 config_homeOS-dev.py
+data/cache.db
+
+
 data/cache.db
 
 

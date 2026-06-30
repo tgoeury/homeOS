@@ -607,11 +607,18 @@ def _player_card(prefix: str = "", art_size: int = 96, show_queue: bool = False)
         ], style={"display": "flex", "justifyContent": "space-between",
                   "fontSize": "11px", "color": CP["text_dim"],
                   "fontFamily": FONT_MONO, "marginTop": "4px"}),
-        html.Div([
-            html.Button("⏮", id=f"{pfx}btn-prev", n_clicks=0, className="ctrl-btn"),
-            html.Button("▶", id=f"{pfx}btn-play", n_clicks=0, className="ctrl-btn ctrl-btn--play"),
-            html.Button("⏭", id=f"{pfx}btn-next", n_clicks=0, className="ctrl-btn"),
-        ], style={"display": "flex", "gap": "8px", "marginTop": "12px"}),
+        html.Div(
+            [
+                html.Button("⏮", id=f"{pfx}btn-prev", n_clicks=0, className="ctrl-btn"),
+                html.Button("▶", id=f"{pfx}btn-play", n_clicks=0, className="ctrl-btn ctrl-btn--play"),
+                html.Button("⏭", id=f"{pfx}btn-next", n_clicks=0, className="ctrl-btn"),
+            ] + ([
+                html.Button("🔀", id="btn-shuffle", n_clicks=0, className="ctrl-btn"),
+                html.Button("🗑", id="btn-clear-queue", n_clicks=0, className="ctrl-btn",
+                            style={"display": "none"}),
+            ] if show_queue else []),
+            style={"display": "flex", "gap": "8px", "marginTop": "12px"},
+        ),
     ]
     row = html.Div([
         html.Div(
@@ -832,11 +839,10 @@ def _page_musique() -> html.Div:
         # ── 1. Lecteur ──────────────────────────────────────────────────────────
         _player_card("", art_size=96, show_queue=True),
 
-        html.Div(id="mu-ctrl-dummy",  style={"display": "none"}),
         html.Div(id="mu-audio-ctrl", style={"display": "none"}),
         dcc.Store(id="mu-local-track"),
         dcc.Store(id="mu-queue"),
-        dcc.Store(id="mu-plex-progress"),
+        dcc.Store(id="mu-shuffle-on", data=False),
         dcc.Store(id="mu-nav-stack", data=[]),
         html.Audio(id="mu-audio", src="", autoPlay=False,
                    controls=False, preload="auto", style={"display": "none"}),

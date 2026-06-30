@@ -100,7 +100,7 @@ from dash import Output, Input, State
 
 app.clientside_callback(
     """
-    function(n, plex_progress) {
+    function(n) {
         function fmt(s) {
             s = Math.floor(s);
             return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
@@ -115,11 +115,6 @@ app.clientside_callback(
             prog = Object.assign({}, fill, {width: pct + '%'});
             pos  = fmt(audio.currentTime);
             dur  = fmt(audio.duration);
-        } else if (plex_progress && plex_progress.pct !== undefined) {
-            btn  = plex_progress.state === 'playing' ? '⏸' : '▶';
-            prog = Object.assign({}, fill, {width: plex_progress.pct + '%'});
-            pos  = plex_progress.pos || '0:00';
-            dur  = plex_progress.dur || '0:00';
         } else {
             prog = Object.assign({}, fill, {width: '0%'});
             pos = '0:00'; dur = '0:00'; btn = '▶';
@@ -137,7 +132,6 @@ app.clientside_callback(
     Output("home-mu-dur",       "children"),
     Output("home-btn-play",     "children"),
     Input("interval-clock",    "n_intervals"),
-    State("mu-plex-progress",  "data"),
 )
 
 app.clientside_callback(

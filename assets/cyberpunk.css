@@ -126,6 +126,7 @@ body {
   padding: 12px 28px;
 }
 .ctrl-btn--play:hover { background: var(--cyan2); }
+.ctrl-btn--active      { background: var(--cyan-dim); color: var(--cyan2); }
 
 /* ── Scrollbar ──────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 4px; height: 4px; }
@@ -177,10 +178,14 @@ ul { margin: 0; }
   flex-shrink: 0;
   width: 150px;
   scroll-snap-align: start;
-  cursor: pointer;
-  transition: opacity .15s;
 }
-.plex-card:hover { opacity: 0.72; }
+.plex-card-info  { cursor: pointer; transition: opacity .15s; }
+.plex-card-info:hover { opacity: 0.72; }
+.plex-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
 .plex-card-img {
   width: 150px;
   height: 150px;
@@ -220,12 +225,37 @@ ul { margin: 0; }
   gap: 14px;
   padding: 10px 8px;
   border-bottom: 1px solid var(--border);
-  cursor: pointer;
   transition: background .15s;
   border-radius: 2px;
 }
 .plex-track-row:last-child { border-bottom: none; }
 .plex-track-row:hover      { background: rgba(0,229,255,0.05); }
+.plex-track-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.plex-track-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.plex-action-btn {
+  background: transparent;
+  border: 1px solid rgba(0,229,255,0.2);
+  color: var(--cyan);
+  font-size: 18px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-family: var(--hud);
+  transition: background .15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.plex-action-btn:hover { background: var(--cyan-dim); }
+.plex-action-btn--add  { color: var(--text-dim); border-color: var(--border); }
 .plex-track-thumb {
   width: 80px;
   height: 80px;

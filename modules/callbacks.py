@@ -1917,34 +1917,23 @@ def _art(thumb: str, size: int = 96) -> html.Div:
     Output("mu-title",         "children"),
     Output("mu-artist",        "children"),
     Output("mu-album",         "children"),
-    Output("mu-plex-progress", "data"),
     Output("home-mu-art",      "children"),
     Output("home-mu-title",    "children"),
     Output("home-mu-artist",   "children"),
-    Input("interval-main",   "n_intervals"),
     Input("mu-local-track",  "data"),
 )
-def update_plex_player(_n, local_track):
-    """Met à jour le lecteur Plex : métadonnées + progression. Fallback sur le store local."""
-    now = plex_client.get_now_playing()
-    if now:
-        dur, pos = now["duration_ms"], now["position_ms"]
-        pct = round(pos / dur * 100) if dur > 0 else 0
-        art = _art(now["thumb"])
-        return (
-            art, now["title"], now["artist"], now["album"],
-            {"pct": pct, "pos": _fmt_ms(pos), "dur": _fmt_ms(dur), "state": now["state"]},
-            _art(now["thumb"], size=48), now["title"], now["artist"],
-        )
+def update_plex_player(local_track):
+    """Met à jour les métadonnées affichées du lecteur (titre/artiste/album/pochette) à partir
+    de la piste locale en cours (lecture 100% navigateur, voir mu-audio)."""
     if local_track:
         title  = local_track.get("title",  "Aucune lecture")
         artist = local_track.get("artist", "PLEX · EN ATTENTE")
         return (
             _art(local_track.get("thumb", "")),
-            title, artist, local_track.get("album", ""), None,
+            title, artist, local_track.get("album", ""),
             _art(local_track.get("thumb", ""), size=48), title, artist,
         )
-    return (_art(""), "Aucune lecture", "PLEX · EN ATTENTE", "", None,
+    return (_art(""), "Aucune lecture", "PLEX · EN ATTENTE", "",
             _art("", size=48), "Aucune lecture", "PLEX · EN ATTENTE")
 
 
@@ -1989,7 +1978,13 @@ def update_plex_shelves(_n):
 
 
 def _track_rows(tracks: list) -> list:
-    """Convertit une liste de dicts piste en lignes cliquables Dash (pochette + titre + artiste)."""
+    """Convertit une liste de dicts piste en lignes cliquables Dash (pochette + titre + artiste).
+
+    Chaque ligne sépare la zone info (clic = insère la piste après l'élément en cours de la
+    file d'attente) des deux boutons d'action (lecture immédiate / ajout en fin de file) : ce
+    sont des divs frères, pas des enfants imbriqués, pour éviter que le clic sur un bouton ne
+    déclenche aussi le callback de la zone info (bubbling Dash).
+    """
     rows = []
     for t in tracks:
         thumb = (
@@ -1998,23 +1993,37 @@ def _track_rows(tracks: list) -> list:
             else html.Div("♪", className="plex-track-thumb plex-track-thumb--placeholder")
         )
         rows.append(html.Div([
-            thumb,
             html.Div([
-                html.Div(t["title"], style={"fontSize": "26px", "color": CP["text"], "fontWeight": "600"}),
-                html.Div(
-                    f"{t.get('artist', '')}  —  {t.get('album', '')}",
-                    style={"fontSize": "20px", "color": CP["text_dim"],
-                           "fontFamily": FONT_MONO, "marginTop": "3px"},
-                ),
-            ], style={"minWidth": "0"}),
-        ], className="plex-track-row",
-           id={"type": "plex-play", "key": t["rating_key"], "media": "track"},
-           n_clicks=0))
+                thumb,
+                html.Div([
+                    html.Div(t["title"], style={"fontSize": "26px", "color": CP["text"], "fontWeight": "600"}),
+                    html.Div(
+                        f"{t.get('artist', '')}  —  {t.get('album', '')}",
+                        style={"fontSize": "20px", "color": CP["text_dim"],
+                               "fontFamily": FONT_MONO, "marginTop": "3px"},
+                    ),
+                ], style={"minWidth": "0"}),
+            ], className="plex-track-info",
+               id={"type": "plex-play", "key": t["rating_key"], "media": "track"},
+               n_clicks=0),
+            html.Div([
+                html.Button("▶", id={"type": "plex-track-now", "key": t["rating_key"]},
+                            n_clicks=0, className="plex-action-btn", title="Lire maintenant"),
+                html.Button("+", id={"type": "plex-track-add", "key": t["rating_key"]},
+                            n_clicks=0, className="plex-action-btn plex-action-btn--add",
+                            title="Ajouter en fin de file"),
+            ], className="plex-track-actions"),
+        ], className="plex-track-row"))
     return rows
 
 
 def _album_cards(albums: list) -> html.Div:
-    """Convertit une liste de dicts album en carrousel de cartes cliquables Dash."""
+    """Convertit une liste de dicts album en carrousel de cartes cliquables Dash.
+
+    Clic sur la zone info = ouvre l'album (affiche ses pistes) ; deux boutons d'action séparés
+    pour lire l'album immédiatement ou l'ajouter en fin de file (voir _track_rows pour la
+    raison de la séparation info/actions en divs frères).
+    """
     cards = []
     for a in albums:
         img = (
@@ -2022,12 +2031,21 @@ def _album_cards(albums: list) -> html.Div:
             if a.get("thumb")
             else html.Div("♪", className="plex-card-img plex-card-img--placeholder")
         )
-        children = [img, html.Div(a["title"], className="plex-card-label")]
+        info_children = [img, html.Div(a["title"], className="plex-card-label")]
         if a.get("year"):
-            children.append(html.Div(a["year"], className="plex-card-sub"))
-        cards.append(html.Div(children, className="plex-card",
-                               id={"type": "plex-play", "key": a["rating_key"], "media": "album"},
-                               n_clicks=0))
+            info_children.append(html.Div(a["year"], className="plex-card-sub"))
+        cards.append(html.Div([
+            html.Div(info_children, className="plex-card-info",
+                     id={"type": "plex-play", "key": a["rating_key"], "media": "album"},
+                     n_clicks=0),
+            html.Div([
+                html.Button("▶", id={"type": "plex-album-now", "key": a["rating_key"]},
+                            n_clicks=0, className="plex-action-btn", title="Lire l'album maintenant"),
+                html.Button("+", id={"type": "plex-album-add", "key": a["rating_key"]},
+                            n_clicks=0, className="plex-action-btn plex-action-btn--add",
+                            title="Ajouter l'album en fin de file"),
+            ], className="plex-card-actions"),
+        ], className="plex-card"))
     return html.Div(cards, className="plex-carousel")
 
 
@@ -2123,31 +2141,124 @@ def handle_plex_navigation(_btn, _submit, _all_clicks, _back, query, nav_stack):
     return no_update, no_update, no_update
 
 
+def _queue_lists(queue) -> tuple:
+    """Normalise un store mu-queue (éventuellement vide/None) en (tracks, idx)."""
+    queue = queue or {}
+    return list(queue.get("tracks", [])), queue.get("idx", 0)
+
+
 @callback(
-    Output("mu-local-track", "data"),
-    Output("mu-queue",       "data"),
-    Input({"type": "plex-play", "key": ALL, "media": ALL}, "n_clicks"),
+    Output("mu-queue", "data", allow_duplicate=True),
+    Input({"type": "plex-play", "key": ALL, "media": "track"}, "n_clicks"),
+    State("mu-queue", "data"),
     prevent_initial_call=True,
 )
-def plex_play_item(all_clicks):
-    """Déclenche la lecture d'une piste (chargement local + file d'attente) ou d'un artiste/playlist (Plex remote)."""
+def insert_track_after_current(all_clicks, queue):
+    """Clic sur une ligne piste (hors boutons) : insère la piste juste après l'élément en cours."""
+    if not any(all_clicks):
+        return no_update
+    triggered = ctx.triggered_id
+    if not triggered or not triggered.get("key"):
+        return no_update
+    track = plex_client.get_track_data(triggered["key"])
+    if not track:
+        return no_update
+    tracks, idx = _queue_lists(queue)
+    tracks.insert(idx + 1, track)
+    return {"tracks": tracks, "idx": idx}
+
+
+@callback(
+    Output("mu-local-track", "data", allow_duplicate=True),
+    Output("mu-queue",       "data", allow_duplicate=True),
+    Input({"type": "plex-track-now", "key": ALL}, "n_clicks"),
+    State("mu-queue", "data"),
+    prevent_initial_call=True,
+)
+def play_track_now(all_clicks, queue):
+    """Bouton ▶ d'une piste : remplace l'élément courant de la file et lance la lecture."""
     if not any(all_clicks):
         return no_update, no_update
     triggered = ctx.triggered_id
     if not triggered or not triggered.get("key"):
         return no_update, no_update
-    key   = triggered["key"]
-    media = triggered.get("media", "")
+    track = plex_client.get_track_data(triggered["key"])
+    if not track:
+        return no_update, no_update
+    tracks, idx = _queue_lists(queue)
+    if tracks and 0 <= idx < len(tracks):
+        tracks[idx] = track
+    else:
+        tracks, idx = [track], 0
+    return track, {"tracks": tracks, "idx": idx}
 
-    if media == "track":
-        track_data = plex_client.get_track_data(key)
-        context    = plex_client.get_album_context(key)
-        return (track_data or no_update), context
 
-    if media in ("artist", "playlist"):
-        plex_client.play_item(key)
+@callback(
+    Output("mu-queue", "data", allow_duplicate=True),
+    Input({"type": "plex-track-add", "key": ALL}, "n_clicks"),
+    State("mu-queue", "data"),
+    prevent_initial_call=True,
+)
+def add_track_to_end(all_clicks, queue):
+    """Bouton + d'une piste : ajoute la piste en fin de file, sans toucher à la lecture en cours."""
+    if not any(all_clicks):
+        return no_update
+    triggered = ctx.triggered_id
+    if not triggered or not triggered.get("key"):
+        return no_update
+    track = plex_client.get_track_data(triggered["key"])
+    if not track:
+        return no_update
+    tracks, idx = _queue_lists(queue)
+    tracks.append(track)
+    return {"tracks": tracks, "idx": idx}
 
-    return no_update, no_update
+
+@callback(
+    Output("mu-local-track", "data", allow_duplicate=True),
+    Output("mu-queue",       "data", allow_duplicate=True),
+    Input({"type": "plex-album-now", "key": ALL}, "n_clicks"),
+    State("mu-shuffle-on", "data"),
+    prevent_initial_call=True,
+)
+def play_album_now(all_clicks, shuffle_on):
+    """Bouton ▶ d'un album : remplace toute la file par l'album et lance la lecture."""
+    if not any(all_clicks):
+        return no_update, no_update
+    triggered = ctx.triggered_id
+    if not triggered or not triggered.get("key"):
+        return no_update, no_update
+    tracks = plex_client.get_album_context(triggered["key"]).get("tracks", [])
+    if not tracks:
+        return no_update, no_update
+    if shuffle_on:
+        random.shuffle(tracks)
+    return tracks[0], {"tracks": tracks, "idx": 0}
+
+
+@callback(
+    Output("mu-queue", "data", allow_duplicate=True),
+    Input({"type": "plex-album-add", "key": ALL}, "n_clicks"),
+    State("mu-queue", "data"),
+    State("mu-shuffle-on", "data"),
+    prevent_initial_call=True,
+)
+def add_album_to_end(all_clicks, queue, shuffle_on):
+    """Bouton + d'un album : ajoute toutes ses pistes en fin de file."""
+    if not any(all_clicks):
+        return no_update
+    triggered = ctx.triggered_id
+    if not triggered or not triggered.get("key"):
+        return no_update
+    new_tracks = plex_client.get_album_context(triggered["key"]).get("tracks", [])
+    if not new_tracks:
+        return no_update
+    if shuffle_on:
+        new_tracks = new_tracks.copy()
+        random.shuffle(new_tracks)
+    tracks, idx = _queue_lists(queue)
+    tracks.extend(new_tracks)
+    return {"tracks": tracks, "idx": idx}
 
 
 @callback(
@@ -2161,7 +2272,9 @@ def update_queue_carousel(queue):
     tracks = queue["tracks"]
     idx    = queue.get("idx", 0)
     cards  = []
-    for t in tracks[idx + 1:]:
+    for pos, t in enumerate(tracks):
+        if pos <= idx:
+            continue
         img = (
             html.Img(src=t["thumb"], className="plex-mini-img")
             if t.get("thumb")
@@ -2170,10 +2283,30 @@ def update_queue_carousel(queue):
         cards.append(html.Div(
             [img, html.Div(t["title"], className="plex-mini-label")],
             className="plex-mini-card",
-            id={"type": "plex-play", "key": t["rating_key"], "media": "track"},
+            id={"type": "plex-queue-jump", "idx": pos},
             n_clicks=0,
         ))
     return cards
+
+
+@callback(
+    Output("mu-local-track", "data", allow_duplicate=True),
+    Output("mu-queue",       "data", allow_duplicate=True),
+    Input({"type": "plex-queue-jump", "idx": ALL}, "n_clicks"),
+    State("mu-queue", "data"),
+    prevent_initial_call=True,
+)
+def jump_queue(all_clicks, queue):
+    """Clic sur une piste de la file d'attente : saute directement dessus."""
+    if not any(all_clicks) or not queue or not queue.get("tracks"):
+        return no_update, no_update
+    triggered = ctx.triggered_id
+    if not triggered or "idx" not in triggered:
+        return no_update, no_update
+    idx, tracks = triggered["idx"], queue["tracks"]
+    if not (0 <= idx < len(tracks)):
+        return no_update, no_update
+    return tracks[idx], {"tracks": tracks, "idx": idx}
 
 
 @callback(
@@ -2215,27 +2348,49 @@ def update_audio_src(track_data):
 
 
 @callback(
-    Output("mu-ctrl-dummy", "children"),
-    Input("btn-prev",      "n_clicks"),
-    Input("btn-play",      "n_clicks"),
-    Input("btn-next",      "n_clicks"),
-    Input("home-btn-prev", "n_clicks"),
-    Input("home-btn-play", "n_clicks"),
-    Input("home-btn-next", "n_clicks"),
+    Output("mu-shuffle-on", "data"),
+    Output("btn-shuffle",   "className"),
+    Output("mu-queue",      "data", allow_duplicate=True),
+    Input("btn-shuffle", "n_clicks"),
+    State("mu-shuffle-on", "data"),
+    State("mu-queue", "data"),
     prevent_initial_call=True,
 )
-def plex_playback_control(_prev, _play, _next, _hprev, _hplay, _hnext):
-    """Envoie les commandes play/pause/prev/next au premier client Plex actif."""
-    triggered = ctx.triggered_id
-    if triggered in ("btn-prev", "home-btn-prev"):
-        plex_client.send_command("skipPrevious")
-    elif triggered in ("btn-next", "home-btn-next"):
-        plex_client.send_command("skipNext")
-    elif triggered in ("btn-play", "home-btn-play"):
-        now = plex_client.get_now_playing()
-        cmd = "pause" if (now and now["state"] == "playing") else "play"
-        plex_client.send_command(cmd)
-    return no_update
+def toggle_shuffle(_n, shuffle_on, queue):
+    """Active/désactive le mode aléatoire ; à l'activation, mélange les pistes à venir de la file."""
+    new_state  = not bool(shuffle_on)
+    class_name = "ctrl-btn ctrl-btn--active" if new_state else "ctrl-btn"
+    if new_state and queue and queue.get("tracks"):
+        tracks, idx = _queue_lists(queue)
+        upcoming = tracks[idx + 1:]
+        random.shuffle(upcoming)
+        tracks[idx + 1:] = upcoming
+        return new_state, class_name, {"tracks": tracks, "idx": idx}
+    return new_state, class_name, no_update
+
+
+@callback(
+    Output("mu-queue", "data", allow_duplicate=True),
+    Input("btn-clear-queue", "n_clicks"),
+    State("mu-queue", "data"),
+    prevent_initial_call=True,
+)
+def clear_queue(_n, queue):
+    """Vide la file d'attente, sans interrompre la piste en cours de lecture."""
+    if not queue or not queue.get("tracks"):
+        return no_update
+    tracks, idx = _queue_lists(queue)
+    current = [tracks[idx]] if 0 <= idx < len(tracks) else []
+    return {"tracks": current, "idx": 0}
+
+
+@callback(
+    Output("btn-clear-queue", "style"),
+    Input("mu-queue", "data"),
+)
+def toggle_clear_queue_visibility(queue):
+    """Le bouton poubelle n'apparaît que si la file contient au moins un élément."""
+    return {} if (queue and queue.get("tracks")) else {"display": "none"}
 
 
 # ── Journal système & périphériques actifs ────────────────────────────────────
