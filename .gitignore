@@ -52,3 +52,6 @@ models/limited.onnx
 .gitignore
 config_dashboard.py
 config_homeOS-dev.py
+data/cache.db
+
+
