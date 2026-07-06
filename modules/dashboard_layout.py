@@ -22,6 +22,10 @@ ROOMS = [
     for rid, rname, accent_key, sensors in CFG.ROOMS
 ]
 
+# Pièces éligibles à l'onglet Confort : on exclut les capteurs extérieurs
+# ("ext-*"), l'optimisation climatique ne concernant que les pièces intérieures.
+CONFORT_ROOMS = [room for room in ROOMS if not room[0].startswith("ext-")]
+
 # Capteurs à afficher sur la page d'accueil, indexés par landing_pos (1-3)
 _LANDING_SENSORS: dict[int, tuple] = {}
 for _rid, _rname, _, _rsensors in ROOMS:
@@ -1059,7 +1063,7 @@ def _page_confort() -> html.Div:
                 style={"--accent": accent},
             ),
         ], style=card_style(accent=accent))
-        for room_id, room_name, accent, _ in ROOMS
+        for room_id, room_name, accent, _ in CONFORT_ROOMS
     ]
 
     return html.Div([

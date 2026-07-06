@@ -37,7 +37,7 @@ from modules.sysinfo import (
     HOST_INFO, SYSTEM_LABEL,
 )
 import config as CFG
-from modules.dashboard_layout import PAGE_IDS, ROOMS
+from modules.dashboard_layout import PAGE_IDS, ROOMS, CONFORT_ROOMS
 from modules import timer_service
 from modules.data_cache       import data_cache
 from modules.data_logger      import data_logger
@@ -978,13 +978,13 @@ _CONFORT_BASE_MARKS = {t: {"label": f"{t}°", "style": {"fontSize": "11px",
 
 
 @callback(
-    *[Output(f"confort-range-{room_id}", "marks") for room_id, *_ in ROOMS],
+    *[Output(f"confort-range-{room_id}", "marks") for room_id, *_ in CONFORT_ROOMS],
     Input("interval-main", "n_intervals"),
 )
 def update_confort_temp_marks(_n):
     """Ajoute sur chaque slider une marque à la position de la température actuelle."""
     results = []
-    for room_id, _, accent, _ in ROOMS:
+    for room_id, _, accent, _ in CONFORT_ROOMS:
         marks = dict(_CONFORT_BASE_MARKS)
         entry = data_cache.read(f"sensor.{room_id}.temperature")
         if entry and entry["value"] is not None:
@@ -1021,12 +1021,12 @@ def _start_confort_inference(_n):
 @callback(
     Output("confort-instructions", "children"),
     Input("confort-calc-store", "data"),
-    *[State(f"confort-range-{room_id}", "value") for room_id, *_ in ROOMS],
+    *[State(f"confort-range-{room_id}", "value") for room_id, *_ in CONFORT_ROOMS],
     prevent_initial_call=True,
 )
 def run_comfort_inference(_, *ranges):
     """Lance l'inférence réelle une fois que l'UI affiche déjà 'En cours'."""
-    comfort_ranges = {room_id: tuple(r) for (room_id, *_), r in zip(ROOMS, ranges)}
+    comfort_ranges = {room_id: tuple(r) for (room_id, *_), r in zip(CONFORT_ROOMS, ranges)}
     room_names = {room_id: room_name for room_id, room_name, *_ in ROOMS}
 
     result = comfort_engine.run_inference(comfort_ranges)
@@ -1048,12 +1048,12 @@ def run_comfort_inference(_, *ranges):
 
 @callback(
     Output("confort-persist-store", "data"),
-    *[Input(f"confort-range-{room_id}", "value") for room_id, *_ in ROOMS],
+    *[Input(f"confort-range-{room_id}", "value") for room_id, *_ in CONFORT_ROOMS],
     prevent_initial_call=True,
 )
 def _persist_confort_ranges(*ranges):
     """Persiste les plages de confort de chaque pièce dans data_cache à chaque modification slider."""
-    for (room_id, *_), val in zip(ROOMS, ranges):
+    for (room_id, *_), val in zip(CONFORT_ROOMS, ranges):
         if val is not None:
             data_cache.write(f"confort.range.{room_id}", val, "°C", "user")
     return None
@@ -2925,6 +2925,16 @@ def update_dl_display(_n, trigger, action, state):
             no_update,
         )
 
+    # Succès DÉJÀ rendu (last_status == "success") : le formulaire ID3 est affiché et
+    # attend l'action utilisateur. L'interval (1 s) ne doit RIEN ré-affirmer ici —
+    # sinon un tick parti juste avant un clic « Enregistrer »/« Annuler » (qui a lu
+    # snap=success avant le clear()) renvoie sa réponse APRÈS l'action et ré-ouvre le
+    # formulaire : le clic « ne fait rien ». Race quasi systématique sur RPi 3 (callbacks
+    # lents). La visibilité n'est donc pilotée que par la transition success et l'action.
+    if status == "success":
+        return (no_update,) * 15
+
+    # Polling pendant le téléchargement : on ne met à jour que la barre de progression.
     return (
         prog_vis, bar_fill, label,
         id3_vis,
