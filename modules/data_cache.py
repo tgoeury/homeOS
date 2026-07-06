@@ -59,11 +59,20 @@ class DataCache:
     def __init__(self, path: Path = _DB_PATH):
         self._path = path
         self._lock = threading.Lock()
+        self._cx: sqlite3.Connection | None = None
         self._init_db()
         self._migrate_legacy_csvs()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(str(self._path), check_same_thread=False)
+        # Connexion SQLite persistante, réutilisée pour tous les appels (round 4) :
+        # ouvrir une connexion par requête est coûteux sur la microSD d'un RPi 3
+        # (~24 ouvertures/5 s rien que pour update_sensors). Tous les accès passent
+        # par self._lock, donc une connexion unique partagée est sûre ;
+        # check_same_thread=False autorise son usage depuis le thread MQTT et Dash.
+        # _connect() est toujours appelé sous self._lock → création paresseuse sûre.
+        if self._cx is None:
+            self._cx = sqlite3.connect(str(self._path), check_same_thread=False)
+        return self._cx
 
     def _init_db(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +140,7 @@ class DataCache:
         La valeur est désérialisée depuis JSON.
         """
         try:
-            with self._connect() as conn:
+            with self._lock, self._connect() as conn:
                 row = conn.execute(
                     "SELECT value, unit, source, updated_at FROM cache WHERE key = ?",
                     (key,),
@@ -236,7 +245,7 @@ class DataCache:
             query += " ORDER BY ts ASC"
             if limit is not None:
                 query += f" LIMIT {int(limit)}"
-            with self._connect() as conn:
+            with self._lock, self._connect() as conn:
                 rows = conn.execute(query, params).fetchall()
             return [{"ts": r[0], "source": r[1], "value": r[2], "unit": r[3]}
                     for r in rows]
@@ -277,7 +286,7 @@ class DataCache:
     def get_ytdlp_jobs(self, limit: int = 20) -> list[dict]:
         """Retourne les jobs yt-dlp récents, du plus récent au plus ancien."""
         try:
-            with self._connect() as conn:
+            with self._lock, self._connect() as conn:
                 rows = conn.execute(
                     "SELECT id, ts, url, params, folder, files, status, created_at "
                     "FROM ytdlp_jobs ORDER BY created_at DESC LIMIT ?",
@@ -372,7 +381,7 @@ class DataCache:
         now = time.time()
         cat_latest: dict[str, float] = {}   # catégorie → timestamp le plus récent
         try:
-            with self._connect() as conn:
+            with self._lock, self._connect() as conn:
                 rows = conn.execute("SELECT key, updated_at FROM cache").fetchall()
             for key, updated_at in rows:
                 cat = key.split(".")[0]

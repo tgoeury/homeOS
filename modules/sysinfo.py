@@ -14,6 +14,12 @@ import shutil
 try:
     import psutil
     HAS_PSUTIL = True
+    # Amorce le compteur cpu_percent en mode non-bloquant : le premier appel
+    # renvoie 0.0, les suivants renvoient le % CPU écoulé depuis l'appel précédent.
+    # Évite le time.sleep(interval) bloquant à chaque tick (~200 ms gaspillés/tick
+    # sur RPi). La fenêtre = l'intervalle réel entre ticks update_system (~8 s),
+    # ce qui donne une moyenne plus représentative qu'un échantillon de 0,2 s.
+    psutil.cpu_percent(interval=None)
 except ImportError:
     HAS_PSUTIL = False
 
@@ -61,10 +67,15 @@ def get_resources() -> dict:
     Utilise psutil si disponible, sinon fallback /proc.
     """
     if HAS_PSUTIL:
-        cpu = psutil.cpu_percent(interval=0.2)
+        cpu = psutil.cpu_percent(interval=None)  # non-bloquant (cf. amorçage à l'import)
         ram = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
-        temp_cpu = _get_cpu_temp_psutil()
+        # Lecture directe d'un seul fichier sysfs d'abord (1 open vs scan de tous
+        # les hwmon par psutil.sensors_temperatures, ~33 ms sur RPi). Fallback psutil
+        # si le chemin thermal_zone n'existe pas (macOS, certains Linux).
+        temp_cpu = _get_cpu_temp_proc()
+        if temp_cpu is None:
+            temp_cpu = _get_cpu_temp_psutil()
         net = psutil.net_io_counters()
         return {
             "cpu_pct":    round(cpu),
