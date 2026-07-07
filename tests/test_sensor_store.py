@@ -11,6 +11,7 @@ ZIGBEE_DEVICES_FIXTURE = {
     "salon_sensor":   {"room": "salon",  "type": "SNZB-02P"},
     "bureau_sensor":  {"room": "bureau", "type": "SNZB-02P"},
     "plant_sensor_1": {"plant": "ficus", "type": "SGS01Z"},
+    "window_sensor_1": {"window": "salon-fenetre-1", "type": "SNZB-04"},
 }
 
 
@@ -72,17 +73,25 @@ class TestUpdate:
 
     def test_soil_moisture_persisted_to_data_cache(self, store):
         store.update("zigbee2mqtt/plant_sensor_1", {"soil_moisture": 42.0, "battery": 98})
-        assert store._mock_dc.log.call_count >= 1
-        logged_series = [c.args[0] for c in store._mock_dc.log.call_args_list]
+        assert store._mock_dc.log_raw.call_count >= 1
+        logged_series = [c.args[0] for c in store._mock_dc.log_raw.call_args_list]
         assert any("plant_ficus_soil_moisture" in n for n in logged_series)
         write_keys = [c.args[0] for c in store._mock_dc.write.call_args_list]
         assert any("plant.ficus.soil_moisture" in k for k in write_keys)
 
     def test_temperature_persisted_to_data_cache(self, store):
         store.update("zigbee2mqtt/salon_sensor", {"temperature": 21.0})
-        assert store._mock_dc.log.call_count >= 1
-        logged_series = [c.args[0] for c in store._mock_dc.log.call_args_list]
+        assert store._mock_dc.log_raw.call_count >= 1
+        logged_series = [c.args[0] for c in store._mock_dc.log_raw.call_args_list]
         assert any("sensor_salon_temperature" in n for n in logged_series)
+
+    def test_contact_persisted_to_data_cache(self, store):
+        store.update("zigbee2mqtt/window_sensor_1", {"contact": False, "battery": 90})
+        write_keys = [c.args[0] for c in store._mock_dc.write.call_args_list]
+        assert any("window.salon-fenetre-1.contact" in k for k in write_keys)
+        assert store._mock_dc.log_raw.call_count >= 1
+        logged_series = [c.args[0] for c in store._mock_dc.log_raw.call_args_list]
+        assert any("window_salon-fenetre-1_contact" in n for n in logged_series)
 
 
 # ── get_field() ───────────────────────────────────────────────────────────────
@@ -135,6 +144,17 @@ class TestRoomPlantLookup:
 
     def test_get_plant_value_returns_none_for_unknown_plant(self, store):
         assert store.get_plant_value("monstera") is None
+
+    def test_get_window_value_maps_window_to_device(self, store):
+        store.update("zigbee2mqtt/window_sensor_1", {"contact": True})
+        assert store.get_window_value("salon-fenetre-1") is True
+
+    def test_get_window_value_reflects_open_state(self, store):
+        store.update("zigbee2mqtt/window_sensor_1", {"contact": False})
+        assert store.get_window_value("salon-fenetre-1") is False
+
+    def test_get_window_value_returns_none_for_unknown_window(self, store):
+        assert store.get_window_value("chambre1-fenetre-1") is None
 
 
 # ── unmapped_devices() / mapped_active_count() ────────────────────────────────

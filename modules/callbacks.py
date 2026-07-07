@@ -6,6 +6,7 @@ Tous les @callback Dash du dashboard, organisés par domaine :
   Navigation    — switch de page et surbrillance du bouton actif
   Capteurs      — données pièces (simulées, futures MQTT) + toggle collapsible
   Plantes       — humidité capteurs plantes (simulée) + toggle collapsible
+  Fenêtres      — état ouvert/fermé capteurs SNZB-04 + toggle collapsible
   Météo         — rendu OpenMeteo : température, prévisions 7 j, graphe horaire
   Système       — CPU, RAM, disque, température, réseau, services, ML
   Réseau        — scan nmap LAN, stats NextDNS, carte choroplèthe DNS
@@ -58,6 +59,16 @@ _plant_list = [
     for _, _, _, sensors in ROOMS
     for sid, lbl, dflt, col, unit, *_ in sensors
     if sid in _plant_ids
+]
+
+# IDs des capteurs fenêtre (valeurs "window" de ZIGBEE_DEVICES)
+_window_ids = frozenset(cfg["window"] for cfg in CFG.ZIGBEE_DEVICES.values() if "window" in cfg)
+# Liste plate (sid, name, default, color) pour les callbacks fenêtre
+_window_list = [
+    (sid, lbl, dflt, col)
+    for _, _, _, sensors in ROOMS
+    for sid, lbl, dflt, col, unit, *_ in sensors
+    if sid in _window_ids
 ]
 
 
@@ -216,6 +227,25 @@ for _room_id, _accent in _rooms_with_plants:
         return _toggle_collapsible(current_style, _acc)
 
 
+# ── Collapsible fenêtres (sous-section imbriquée dans chaque pièce) ──────────
+
+_rooms_with_windows = [
+    (rid, accent)
+    for rid, _, accent, sensors in ROOMS
+    if any(sid in _window_ids for sid, *_ in sensors)
+]
+for _room_id, _accent in _rooms_with_windows:
+    @callback(
+        Output(f"window-content-{_room_id}", "style"),
+        Output(f"window-arrow-{_room_id}",   "style"),
+        Input(f"window-toggle-{_room_id}",   "n_clicks"),
+        State(f"window-content-{_room_id}", "style"),
+        prevent_initial_call=True,
+    )
+    def toggle_window(n_clicks, current_style, _acc=_accent):
+        return _toggle_collapsible(current_style, _acc)
+
+
 # ── Capteurs plantes (humidité) ───────────────────────────────────────────────
 
 # Construire les listes d'Output dynamiquement depuis _plant_list
@@ -278,6 +308,52 @@ def update_plants(_n):
             })
 
     return (*values, *bar_styles, *val_styles)
+
+
+# ── Capteurs fenêtre (ouverture/fermeture) ────────────────────────────────────
+
+_window_outputs_val = [Output(sid, "children") for sid, *_ in _window_list]
+_window_outputs_col = [Output(sid, "style")    for sid, *_ in _window_list]
+
+@callback(
+    *_window_outputs_val,
+    *_window_outputs_col,
+    Input("interval-main", "n_intervals"),
+)
+def update_windows(_n):
+    """
+    Met à jour les capteurs d'ouverture/fermeture de fenêtre (SNZB-04).
+    Convention Zigbee2MQTT : contact=True → fenêtre fermée, contact=False → ouverte.
+    Priorité : valeur MQTT fraîche (sensor_store) → cache DB → "--".
+    """
+    values, val_styles = [], []
+
+    for sid, name, dflt, color in _window_list:
+        real_val = sensor_store.get_window_value(sid)
+
+        if real_val is not None:
+            closed = real_val
+            data_cache.write(f"window.{sid}.contact", closed, "", "zigbee")
+        else:
+            entry = data_cache.read(f"window.{sid}.contact")
+            closed = bool(entry["value"]) if entry else None
+
+        if closed is None:
+            values.append("--")
+            col = CP["text_dim"]
+        elif closed:
+            values.append("FERMÉE")
+            col = CP["green"]
+        else:
+            values.append("OUVERTE")
+            col = CP["red"]
+
+        val_styles.append({
+            "fontSize": "26px", "fontWeight": "700",
+            "color": col, "fontFamily": FONT_HUD, "lineHeight": "1.1",
+        })
+
+    return (*values, *val_styles)
 
 
 # ── Découverte Zigbee ─────────────────────────────────────────────────────────
@@ -801,12 +877,13 @@ def _trend(pts: list[tuple], current: float, threshold: float = 0.5) -> tuple[st
     return ("↑", CP["red"]) if diff > 0 else ("↓", CP["cyan"])
 
 
-# Outputs construits dynamiquement depuis ROOMS — capteurs plantes exclus (gérés par update_plants)
+# Outputs construits dynamiquement depuis ROOMS — capteurs plantes/fenêtre exclus
+# (gérés respectivement par update_plants et update_windows)
 _sensor_room_outputs = [
     Output(sid, "children")
     for _, _, _, sensors in ROOMS
     for sid, *_ in sensors
-    if sid not in _plant_ids
+    if sid not in _plant_ids and sid not in _window_ids
 ]
 
 # Rooms disposant à la fois d'un capteur temp et hygro → température ressentie
@@ -854,8 +931,8 @@ def update_sensors(_n):
         _cr = data_cache.read(f"confort.range.{room_id}")
         t_min, t_max = (_cr["value"][0], _cr["value"][1]) if _cr else (CFG.ALERT_TEMP_MIN, CFG.ALERT_TEMP_MAX)
         for sid, _, default, _, _, landing_pos in sensors:
-            if sid in _plant_ids:
-                continue  # handled by update_plants
+            if sid in _plant_ids or sid in _window_ids:
+                continue  # handled by update_plants / update_windows
             field = _field_from_sid(sid)
 
             if field == "temperature":

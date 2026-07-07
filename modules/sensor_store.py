@@ -6,7 +6,7 @@ Alimentation : mqtt_client appelle sensor_store.update(topic, payload).
 Lecture      : callbacks appellent get_room_value() / get_plant_value().
 Découverte   : unmapped_devices() retourne les appareils non encore configurés.
 
-Historique   : toute valeur reçue (température, humidité, luminosité, soil_moisture)
+Historique   : toute valeur reçue (température, humidité, luminosité, soil_moisture, contact)
                est immédiatement persistée dans data/cache.db via data_cache.write()
                (dernière valeur connue) et data_cache.log() (série temporelle).
                Force=True : bypass write-on-change, chaque message MQTT est enregistré.
@@ -19,6 +19,7 @@ import config as CFG
 from modules.data_cache import data_cache
 
 _PLANT_MAX_AGE = 24 * 3600   # 24 h — les capteurs plantes envoient rarement
+_WINDOW_MAX_AGE = 3 * 3600   # 3 h — les SNZB-04 n'ont pas de heartbeat périodique fiable
 
 
 def _safe_id(name: str) -> str:
@@ -36,6 +37,8 @@ class SensorStore:
         self._data: dict[str, dict] = {}
         # Cache du mapping device_name → plant_id pour éviter de re-parcourir CFG à chaque message
         self._device_to_plant: dict[str, str | None] = {}
+        # Cache du mapping device_name → window_id (capteurs SNZB-04)
+        self._device_to_window: dict[str, str | None] = {}
         # Fenêtre glissante (j, k) par série history : (j_val, j_ts, k_val, k_ts)
         # j = dernière valeur reçue ; k = avant-dernière
         self._buf: dict[str, tuple] = {}
@@ -50,6 +53,17 @@ class SensorStore:
                     break
             self._device_to_plant[device] = plant_id
         return self._device_to_plant[device] or _safe_id(device)
+
+    def _window_id_for(self, device: str) -> str:
+        """Retourne le window_id configuré pour ce device, ou l'identifiant sanitisé du device."""
+        if device not in self._device_to_window:
+            window_id = None
+            for dev_name, dev_cfg in CFG.ZIGBEE_DEVICES.items():
+                if dev_name == device and dev_cfg.get("window"):
+                    window_id = dev_cfg["window"]
+                    break
+            self._device_to_window[device] = window_id
+        return self._device_to_window[device] or _safe_id(device)
 
     # ── Fenêtre glissante ─────────────────────────────────────────────────────
 
@@ -139,6 +153,19 @@ class SensorStore:
             except (TypeError, ValueError):
                 pass
 
+        if "contact" in payload:
+            closed = bool(payload["contact"])
+            window_id = self._window_id_for(device)
+            src_window = f"SNZB-04 · Zigbee2MQTT · {device}"
+            data_cache.write(f"window.{window_id}.contact", closed, "", src_window)
+            series = f"window_{window_id}_contact"
+            with self._lock:
+                action = self._buf_step(series, str(closed), now)
+            if action[0] == "insert":
+                data_cache.log_raw(series, now, closed, "", src_window)
+            else:
+                data_cache.update_history_ts(series, action[1], now)
+
     # ── Lecture par champ ─────────────────────────────────────────────────────
 
     def get_field(self, device_name: str, field: str, max_age: float = 900) -> float | None:
@@ -183,6 +210,18 @@ class SensorStore:
                 val = self.get_field(dev_name, field, max_age)
                 if val is not None:
                     return val
+        return None
+
+    def get_window_value(self, window_id: str, max_age: float = _WINDOW_MAX_AGE) -> bool | None:
+        """
+        Retourne l'état contact d'un capteur de fenêtre (True = fermée, False = ouverte).
+        Cherche dans CFG.ZIGBEE_DEVICES le device avec "window" == window_id.
+        """
+        for dev_name, dev_cfg in CFG.ZIGBEE_DEVICES.items():
+            if dev_cfg.get("window") == window_id:
+                val = self.get_field(dev_name, "contact", max_age)
+                if val is not None:
+                    return bool(val)
         return None
 
     # ── Découverte ────────────────────────────────────────────────────────────

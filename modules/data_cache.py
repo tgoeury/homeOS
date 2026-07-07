@@ -18,6 +18,7 @@ Clés cache :
 Séries history (name) :
   sensor_<room>_temperature / humidity / luminosity
   plant_<id>_soil_moisture
+  window_<id>_contact
   weather_temperature / humidity / wind_speed / pressure / sky
   network_devices_count / dns_blocked / dns_rate
   enedis_daily

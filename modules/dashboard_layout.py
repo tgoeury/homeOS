@@ -38,6 +38,11 @@ _PLANT_IDS = frozenset(
     cfg["plant"] for cfg in CFG.ZIGBEE_DEVICES.values() if "plant" in cfg
 )
 
+# IDs des capteurs fenêtre : tous les "window" renseignés dans ZIGBEE_DEVICES
+_WINDOW_IDS = frozenset(
+    cfg["window"] for cfg in CFG.ZIGBEE_DEVICES.values() if "window" in cfg
+)
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _sec_title(text: str) -> html.Div:
@@ -375,18 +380,60 @@ def _plant_subsection(room_id: str, accent: str, plants: list) -> html.Div:
     ])
 
 
+def _window_subsection(room_id: str, accent: str, windows: list) -> html.Div:
+    """
+    Sous-section collapsible des fenêtres imbriquée à l'intérieur d'un panneau de pièce.
+    windows — liste de (sid, lbl, dflt, col, unit) filtrée sur les capteurs fenêtre.
+    """
+    n = len(windows)
+    window_cards = [_window_card(sid, lbl, col) for sid, lbl, dflt, col, *_ in windows]
+    return html.Div([
+        html.Button([
+            html.Span("🪟  FENÊTRES", style={
+                "fontSize": "13px", "fontWeight": "600", "letterSpacing": "3px",
+                "color": accent, "fontFamily": FONT_MONO,
+            }),
+            html.Span("▼", id=f"window-arrow-{room_id}", style={
+                "fontSize": "12px", "color": accent, "marginLeft": "8px",
+                "transition": "transform .2s",
+            }),
+            html.Span(f"// {n} capteur(s)", style={
+                "fontSize": "11px", "letterSpacing": "2px", "color": CP["text_dim"],
+                "fontFamily": FONT_MONO, "marginLeft": "12px",
+            }),
+        ], id=f"window-toggle-{room_id}", n_clicks=0, style={
+            "width": "100%", "background": "transparent",
+            "border": "none", "borderTop": f"1px solid {accent}33",
+            "padding": "10px 18px", "textAlign": "left", "cursor": "pointer",
+            "display": "flex", "alignItems": "center",
+            "-webkit-tap-highlight-color": "transparent",
+        }),
+        html.Div(
+            window_cards,
+            id=f"window-content-{room_id}",
+            style={
+                "display": "grid",
+                "gridTemplateColumns": f"repeat({min(n, 3)}, 1fr)",
+                "gap": "10px", "padding": "10px 18px 14px 18px",
+            },
+        ),
+    ])
+
+
 def _room_panel(room_id: str, room_name: str, accent: str, sensors: list) -> html.Div:
     """
     Panneau collapsible de la pièce `room_id` pour l'onglet Capteurs.
-    Les capteurs plantes (IDs dans `_PLANT_IDS`) sont rendus dans une sous-section
-    collapsible dédiée, imbriquée en bas du panneau.
+    Les capteurs plantes (IDs dans `_PLANT_IDS`) et fenêtre (IDs dans `_WINDOW_IDS`)
+    sont rendus dans des sous-sections collapsibles dédiées, imbriquées en bas du panneau.
     """
     regular = [(sid, lbl, dflt, col, unit) for sid, lbl, dflt, col, unit, *_ in sensors
-               if sid not in _PLANT_IDS]
+               if sid not in _PLANT_IDS and sid not in _WINDOW_IDS]
+    windows = [(sid, lbl, dflt, col, unit) for sid, lbl, dflt, col, unit, *_ in sensors
+               if sid in _WINDOW_IDS]
     plants  = [(sid, lbl, dflt, col, unit) for sid, lbl, dflt, col, unit, *_ in sensors
                if sid in _PLANT_IDS]
 
-    n_total = len(regular) + len(plants)
+    n_total = len(regular) + len(windows) + len(plants)
 
     _card_extra = {"marginBottom": "8px",
                    "clipPath": "polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)"}
@@ -407,6 +454,8 @@ def _room_panel(room_id: str, room_name: str, accent: str, sensors: list) -> htm
             "gridTemplateColumns": f"repeat({min(n_reg, 3)}, 1fr)",
             "gap": "10px", "padding": "14px 18px 4px 18px",
         }))
+    if windows:
+        content_children.append(_window_subsection(room_id, accent, windows))
     if plants:
         content_children.append(_plant_subsection(room_id, accent, plants))
 
@@ -520,6 +569,24 @@ def _plant_card(plant_id: str, name: str, default: str, accent: str) -> html.Div
         "marginBottom": "8px",
         "clipPath": "polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)",
         "position": "relative",
+    }))
+
+
+def _window_card(window_id: str, name: str, accent: str) -> html.Div:
+    """
+    Carte individuelle pour un capteur d'ouverture/fermeture de fenêtre (SNZB-04).
+    Affiche le nom et l'état courant (OUVERTE / FERMÉE).
+    """
+    return html.Div([
+        html.Div(name, style=label_style()),
+        html.Div("--", id=window_id, style=value_style(size="26px", color=accent)),
+        html.Div("SNZB-04 · Zigbee2MQTT", style={
+            "fontSize": "11px", "color": "rgba(0,229,255,0.3)",
+            "fontFamily": FONT_MONO, "marginTop": "4px",
+        }),
+    ], style=card_style(accent=accent, extra={
+        "marginBottom": "8px",
+        "clipPath": "polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)",
     }))
 
 
