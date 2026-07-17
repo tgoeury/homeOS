@@ -34,6 +34,7 @@ Stratégie :
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import requests
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 NAS_STALE_SECS = 6 * 3600   # délai au-delà duquel la data est considérée obsolète
+_RETRY_COOLDOWN = 5 * 60    # délai mini entre deux tentatives après un échec (NAS injoignable)
 
 # Nom de session DSM : doit correspondre à une application reconnue. File Station
 # est accessible aux comptes non-admin via la permission applicative dédiée,
@@ -80,6 +82,9 @@ class SynologyClient:
         self._cache_ts: float = 0.0
         ttl = getattr(CFG, "SYNOLOGY_NAS_TTL", 3600)
         self._ttl: int = int(ttl)
+        self._refreshing:      bool  = False
+        self._refresh_lock            = threading.Lock()
+        self._last_attempt_ts: float  = 0.0
 
     # ── Configuration ──────────────────────────────────────────────────────────
 
@@ -250,38 +255,54 @@ class SynologyClient:
 
     def fetch(self, force: bool = False) -> dict | None:
         """
-        Retourne {volumes, system, fetched_at} depuis le cache si frais (< TTL).
-        Force un appel API si force=True ou si le cache est périmé.
-        Retourne None si non configuré ou si l'API échoue.
+        Retourne immédiatement le cache courant (None tant qu'aucun fetch n'a abouti).
+        Si le cache est périmé (ou force=True), déclenche un refresh en arrière-plan
+        (thread daemon) sans jamais bloquer l'appelant — un callback Dash ne doit pas
+        attendre login+list_share+DSM.Info+logout (jusqu'à ~35 s de timeouts cumulés).
         """
-        if not force and not self.is_stale(self._ttl):
-            return self._cache
-
-        if not self.is_configured():
-            logger.debug("SynologyClient: non configuré — fetch ignoré")
-            return self._cache
-
-        sid = self._login()
-        if sid is None:
-            return self._cache   # retourne le vieux cache si disponible
-
-        try:
-            volumes = self._get_volumes(sid)
-            system  = self._get_system_info(sid)
-        finally:
-            self._logout(sid)
-
-        self._cache = {
-            "volumes":    volumes,
-            "system":     system,
-            "fetched_at": time.time(),
-        }
-        self._cache_ts = time.time()
-        logger.info(
-            "SynologyClient: %d volume(s), temp=%s°C, uptime=%ds",
-            len(volumes), system.get("temperature"), system.get("uptime_s"),
-        )
+        if (force or self.is_stale(self._ttl)) and self.is_configured():
+            self._trigger_refresh(force=force)
         return self._cache
+
+    def _trigger_refresh(self, force: bool = False) -> None:
+        """Lance _do_fetch() dans un thread, sauf refresh déjà en cours ou retry trop rapproché
+        (évite un thread de tentative de login à chaque tick de 60 s quand le NAS est éteint)."""
+        with self._refresh_lock:
+            if self._refreshing:
+                return
+            if not force and self._last_attempt_ts and \
+                    (time.time() - self._last_attempt_ts) < _RETRY_COOLDOWN:
+                return
+            self._refreshing = True
+        threading.Thread(target=self._do_fetch, daemon=True, name="synology-fetch").start()
+
+    def _do_fetch(self) -> None:
+        """Corps du fetch (login/volumes/system/logout), exécuté hors du thread appelant."""
+        self._last_attempt_ts = time.time()
+        try:
+            sid = self._login()
+            if sid is None:
+                return
+
+            try:
+                volumes = self._get_volumes(sid)
+                system  = self._get_system_info(sid)
+            finally:
+                self._logout(sid)
+
+            self._cache = {
+                "volumes":    volumes,
+                "system":     system,
+                "fetched_at": time.time(),
+            }
+            self._cache_ts = time.time()
+            logger.info(
+                "SynologyClient: %d volume(s), temp=%s°C, uptime=%ds",
+                len(volumes), system.get("temperature"), system.get("uptime_s"),
+            )
+        finally:
+            with self._refresh_lock:
+                self._refreshing = False
 
 
 synology_client = SynologyClient()

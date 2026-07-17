@@ -66,6 +66,8 @@ class EnedisService:
     def __init__(self) -> None:
         self._last_error:     str | None = None
         self._morning_failed: bool       = False
+        self._hist_cache:     list[dict] | None = None
+        self._hist_lock       = threading.Lock()
 
         self._thread = threading.Thread(
             target=self._schedule_loop,
@@ -94,8 +96,17 @@ class EnedisService:
 
     def read_history(self) -> list[dict]:
         """
-        Retourne [{date, kwh}, …] triés ASC depuis data/cache.db.
+        Retourne [{date, kwh}, …] triés ASC. Mémoïsé en mémoire (invalidé par
+        _store_rows, seul point d'écriture de la série) — les données ne
+        changent qu'une fois par jour, inutile de rescanner/re-parser SQLite
+        à chaque appel. Ne pas muter la liste retournée.
         """
+        with self._hist_lock:
+            if self._hist_cache is None:
+                self._hist_cache = self._read_history_from_db()
+            return self._hist_cache
+
+    def _read_history_from_db(self) -> list[dict]:
         rows = data_cache.read_history(_HISTORY_NAME)
         result = []
         seen: set[date] = set()
@@ -192,19 +203,19 @@ class EnedisService:
         return True
 
     def _store_rows(self, rows: list[tuple]) -> None:
-        """Enregistre (date_str, kwh) dans data/cache.db, en contournant le write-on-change."""
+        """Enregistre (date_str, kwh) dans data/cache.db en une seule transaction."""
+        db_rows = []
         for date_str, kwh in rows:
             try:
                 d  = date.fromisoformat(date_str)
                 ts = _date_to_ts(d)
-                with data_cache._lock, data_cache._connect() as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO history (name,ts,source,value,unit) "
-                        "VALUES (?,?,?,?,?)",
-                        (_HISTORY_NAME, ts, "enedis", str(kwh), "kWh"),
-                    )
+                db_rows.append((_HISTORY_NAME, ts, "enedis", str(kwh), "kWh"))
             except Exception as e:
                 logger.error("EnedisService._store_rows: %s", e)
+        if db_rows:
+            data_cache.log_raw_many(db_rows)
+        with self._hist_lock:
+            self._hist_cache = None
 
     def _fetch_chunk(self, start: date, end: date) -> list[tuple] | None:
         try:
@@ -248,11 +259,5 @@ class EnedisService:
             for r in readings
             if "date" in r and "value" in r
         ]
-
-    # ── Compat ────────────────────────────────────────────────────────────────
-
-    def refresh_if_needed(self) -> None:
-        """No-op — le fetch est géré par le scheduler (8h42 + retry toutes les 60 min)."""
-
 
 enedis_service = EnedisService()

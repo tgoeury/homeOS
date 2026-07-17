@@ -51,7 +51,10 @@ ALARM_DATA_URI: str = _make_beep()
 # ── Presets SQLite ────────────────────────────────────────────────────────────
 
 def _connect() -> sqlite3.Connection:
-    return sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
 
 
 def _init_presets() -> None:
