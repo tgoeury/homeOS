@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_DIR = Path(__file__).parent.parent / "data" / "downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# Présence de ce fichier dans le dossier d'un job = "ne pas transférer ces fichiers vers
+# le NAS, le job yt-dlp (téléchargement / conversion / tags ID3) n'est pas terminé".
+LOCK_FILENAME = "ytdlp.lock"
+
 # Regex sur les lignes [download]  45.2% of 5.67MiB at  1.23MiB/s ETA 00:03
 _PROGRESS_RE = re.compile(
     r"\[download\]\s+([\d.]+)%\s+of\s+~?[\d.]+\S*\s+at\s+([\S]+)\s+ETA\s+([\S]+)"
@@ -43,6 +47,7 @@ class YtdlpJob:
         self.params = params
         self.folder = DOWNLOAD_DIR / ts
         self.folder.mkdir(parents=True, exist_ok=True)
+        (self.folder / LOCK_FILENAME).touch()
         self.process: subprocess.Popen | None = None
         self.status       = "running"
         self.progress_pct: float = 0.0
@@ -51,6 +56,10 @@ class YtdlpJob:
         self.metadata: dict   = {}
         self.error: str       = ""
         self._lock = threading.Lock()
+
+    def _remove_lock(self) -> None:
+        """Retire le fichier de verrouillage — le service de transfert peut reprendre la main."""
+        (self.folder / LOCK_FILENAME).unlink(missing_ok=True)
 
     # ── Construction de la commande ───────────────────────────────────────────
 
@@ -176,16 +185,19 @@ class YtdlpJob:
                     self.status       = "failed"
                     self.error        = tail
                     self.progress_str = "Erreur yt-dlp (voir logs)"
+                    self._remove_lock()
         except FileNotFoundError:
             with self._lock:
                 self.status       = "failed"
                 self.error        = "yt-dlp introuvable — installez-le : pip install yt-dlp"
                 self.progress_str = self.error
+                self._remove_lock()
         except Exception as exc:
             with self._lock:
                 self.status       = "failed"
                 self.error        = str(exc)
                 self.progress_str = f"Erreur : {exc}"
+                self._remove_lock()
         logger.info("YtdlpJob %s: status=%s files=%s", self.id, self.status, self.files)
 
     def start(self) -> None:
@@ -274,6 +286,10 @@ class YtdlpService:
     def clear(self) -> None:
         with self._lock:
             self._job = None
+
+    def release_lock(self, folder: str) -> None:
+        """Supprime ytdlp.lock une fois le job entièrement terminé (tags ID3 inclus)."""
+        Path(folder, LOCK_FILENAME).unlink(missing_ok=True)
 
     def apply_tags(self, files: list[str], folder: str, tags: dict,
                    single_file: bool = True) -> None:

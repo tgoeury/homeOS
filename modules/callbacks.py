@@ -2907,6 +2907,7 @@ def update_dl_display(_n, trigger, action, state):
                 single_file=len(files) == 1,
             )
             data_cache.update_ytdlp_job(snap["id"], "success", files)
+            ytdlp_service.release_lock(snap["folder"])
             ytdlp_service.clear()
 
             if action.get("save_on_device") and files:
