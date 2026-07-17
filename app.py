@@ -73,6 +73,22 @@ def _prefetch() -> None:
     except Exception as exc:
         log.warning("Scan réseau échoué : %s", exc)
 
+    _purge_history_loop()
+
+
+def _purge_history_loop() -> None:
+    """Purge la table history (> 90 j, hors séries Enedis) au démarrage puis toutes les 24h."""
+    log = logging.getLogger("startup")
+    try:
+        from modules.data_cache import data_cache
+        n = data_cache.purge_history()
+        log.info("Purge history : %d ligne(s) supprimée(s)", n)
+    except Exception as exc:
+        log.warning("Purge history échouée : %s", exc)
+    timer = threading.Timer(24 * 3600, _purge_history_loop)
+    timer.daemon = True
+    timer.start()
+
 
 threading.Thread(target=_prefetch, daemon=True, name="prefetch").start()
 

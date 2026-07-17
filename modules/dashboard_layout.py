@@ -524,6 +524,8 @@ def _page_capteurs() -> html.Div:
             ),
         ], style=card_style(accent=CP["yellow"])),
 
+        dcc.Interval(id="interval-graphs", interval=60_000, n_intervals=0),
+
     ], id="page-capteurs", style={"padding": "16px", "display": "none",
                                     "flexDirection": "column", "gap": "0",
                                     "overflowY": "auto"})
@@ -890,7 +892,7 @@ def _ytdlp_section() -> html.Div:
         dcc.Store(id="dl-state-store",   data={}),
         dcc.Store(id="dl-files-store",   data=[]),
         dcc.Download(id="dl-download"),
-        dcc.Interval(id="interval-ytdlp", interval=1_000, n_intervals=0),
+        dcc.Interval(id="interval-ytdlp", interval=1_000, n_intervals=0, disabled=True),
 
     ], style=card_style(accent=CP["yellow"]))
 
@@ -1467,6 +1469,8 @@ def build_layout() -> html.Div:
         html.Div(className="bg-corner bg-corner--tl"),
         html.Div(className="bg-corner bg-corner--br"),
         html.Div(className="scanlines"),
+
+        dcc.Store(id="active-page-store", data="accueil"),
 
         html.Div([
             _topbar(),

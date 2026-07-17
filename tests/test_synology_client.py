@@ -339,6 +339,14 @@ class TestGetSystemInfo:
 # ── fetch() ───────────────────────────────────────────────────────────────────
 
 class TestFetch:
+    """
+    fetch() est non-bloquant depuis P10 (round d'optimisation RPi 3) : il retourne
+    immédiatement le cache courant et déclenche _do_fetch() dans un thread daemon
+    si le cache est périmé. Les tests qui vérifient le contenu d'un fetch appellent
+    donc _do_fetch() directement (synchrone, déterministe) plutôt que fetch() —
+    cf. rapport d'optimisation P10 : "exposer _do_fetch testable en direct".
+    """
+
     def _mock_api(self, client, auth_ok=True, vol_resp=None, sys_resp=None):
         """Patch login + volumes (FileStation) + system (DSM.Info) pour simuler un fetch complet."""
         vol_resp = vol_resp or VOLUMES_RESP
@@ -359,22 +367,30 @@ class TestFetch:
         return patch("modules.synology_client.requests.post", post_mock), \
                patch("modules.synology_client.requests.get",  get_mock)
 
-    def test_fetch_returns_dict_with_volumes_and_system(self, client):
+    def test_do_fetch_returns_dict_with_volumes_and_system(self, client):
         p_post, p_get = self._mock_api(client)
         with p_post, p_get:
-            result = client.fetch()
+            client._do_fetch()
+        result = client._cache
         assert result is not None
         assert "volumes" in result
         assert "system"  in result
         assert len(result["volumes"]) == 2
         assert result["system"]["model"] == "DS420+"
 
-    def test_fetch_updates_cache(self, client):
+    def test_do_fetch_updates_cache(self, client):
         p_post, p_get = self._mock_api(client)
         with p_post, p_get:
-            result = client.fetch()
-        assert client._cache is result
+            client._do_fetch()
+        assert client._cache is not None
         assert client._cache_ts > 0
+
+    def test_do_fetch_clears_refreshing_flag(self, client):
+        client._refreshing = True
+        p_post, p_get = self._mock_api(client)
+        with p_post, p_get:
+            client._do_fetch()
+        assert client._refreshing is False
 
     def test_fetch_uses_cache_within_ttl(self, client):
         client._cache    = {"volumes": [], "system": {}, "fetched_at": time.time()}
@@ -384,13 +400,29 @@ class TestFetch:
         mock_post.assert_not_called()
         assert result is client._cache
 
-    def test_fetch_force_bypasses_cache(self, client):
+    def test_fetch_returns_cache_immediately_without_blocking(self, client):
+        """fetch() ne doit jamais bloquer sur le réseau — il retourne le cache tel quel
+        et laisse le thread de refresh tourner en arrière-plan."""
+        client._cache    = {"volumes": [], "system": {}, "fetched_at": time.time() - 7200}
+        client._cache_ts = time.time() - 7200   # périmé
+        with patch("modules.synology_client.threading.Thread") as mock_thread:
+            result = client.fetch()
+        assert result is client._cache
+        mock_thread.assert_called_once()
+        mock_thread.return_value.start.assert_called_once()
+
+    def test_fetch_does_not_trigger_refresh_when_already_refreshing(self, client):
+        client._refreshing = True
+        with patch("modules.synology_client.threading.Thread") as mock_thread:
+            client.fetch()
+        mock_thread.assert_not_called()
+
+    def test_fetch_force_triggers_refresh_even_with_fresh_cache(self, client):
         client._cache    = {"volumes": [], "system": {}, "fetched_at": time.time()}
-        client._cache_ts = time.time()
-        p_post, p_get = self._mock_api(client)
-        with p_post, p_get:
-            result = client.fetch(force=True)
-        assert len(result["volumes"]) == 2   # données fraîches chargées
+        client._cache_ts = time.time()   # frais
+        with patch("modules.synology_client.threading.Thread") as mock_thread:
+            client.fetch(force=True)
+        mock_thread.assert_called_once()
 
     def test_fetch_returns_none_when_not_configured(self, unconfigured_client):
         with patch("modules.synology_client.requests.post") as mock_post:
@@ -398,16 +430,16 @@ class TestFetch:
         mock_post.assert_not_called()
         assert result is None
 
-    def test_fetch_returns_old_cache_on_login_failure(self, client):
+    def test_do_fetch_keeps_old_cache_on_login_failure(self, client):
         old_cache = {"volumes": [{"path": "/v1"}], "system": {}}
         client._cache    = old_cache
         client._cache_ts = time.time() - 7200   # expiré
         with patch("modules.synology_client.requests.post",
                    return_value=_make_resp(_auth_fail())):
-            result = client.fetch()
-        assert result is old_cache
+            client._do_fetch()
+        assert client._cache is old_cache
 
-    def test_fetch_calls_logout_after_success(self, client):
+    def test_do_fetch_calls_logout_after_success(self, client):
         mock_post = MagicMock(return_value=_make_resp(_auth_ok("sid_xyz")))
 
         def get_side_effect(url, **kwargs):
@@ -421,12 +453,12 @@ class TestFetch:
 
         with patch("modules.synology_client.requests.post", mock_post):
             with patch("modules.synology_client.requests.get", side_effect=get_side_effect) as mock_get:
-                client.fetch()
+                client._do_fetch()
 
         logout_calls = [c for c in mock_get.call_args_list if "logout" in str(c)]
         assert len(logout_calls) == 1
 
-    def test_fetch_calls_logout_even_on_volumes_error(self, client):
+    def test_do_fetch_calls_logout_even_on_volumes_error(self, client):
         """Le logout doit être appelé même si _get_volumes lève une exception."""
         import requests as req_lib
         post_mock = MagicMock(return_value=_make_resp(_auth_ok("sid_x")))
@@ -445,7 +477,7 @@ class TestFetch:
 
         with patch("modules.synology_client.requests.post", post_mock):
             with patch("modules.synology_client.requests.get", side_effect=get_side_effect):
-                client.fetch()
+                client._do_fetch()
         assert "logout" in call_log
 
 

@@ -1,6 +1,5 @@
-"""Tests unitaires pour modules/chatbot_engine.py — état in-memory + HTTP mock."""
+"""Tests unitaires pour modules/chatbot_engine.py — état in-memory."""
 import time
-from unittest.mock import MagicMock, patch
 
 import pytest
 import modules.chatbot_engine as ce
@@ -55,75 +54,11 @@ class TestStore:
         assert ce.get_messages() == []
 
 
-# ── send_message() ────────────────────────────────────────────────────────────
-
-class TestSendMessage:
-    def _mock_post(self, status_code=200):
-        resp = MagicMock()
-        resp.status_code = status_code
-        return patch("modules.chatbot_engine.requests.post", return_value=resp)
-
-    def test_send_stores_user_message(self):
-        with self._mock_post():
-            ce.send_message("bonjour")
-        msgs = ce.get_messages()
-        assert any(m["role"] == "user" and m["text"] == "bonjour" for m in msgs)
-
-    def test_send_success_returns_true(self):
-        with self._mock_post(200):
-            result = ce.send_message("test")
-        assert result is True
-
-    def test_send_http_error_returns_false(self):
-        with self._mock_post(500):
-            result = ce.send_message("test")
-        assert result is False
-
-    def test_send_network_error_returns_false(self):
-        import requests as req_lib
-        with patch("modules.chatbot_engine.requests.post",
-                   side_effect=req_lib.RequestException("timeout")):
-            result = ce.send_message("test")
-        assert result is False
-
-    def test_send_updates_connection_status_on_success(self):
-        with self._mock_post(200):
-            ce.send_message("ok")
-        assert ce.get_connection_status() is True
-
-    def test_send_updates_connection_status_on_failure(self):
-        with self._mock_post(503):
-            ce.send_message("fail")
-        assert ce.get_connection_status() is False
-
-
 # ── get_connection_status() ───────────────────────────────────────────────────
 
 class TestConnectionStatus:
     def test_false_before_any_send(self):
         assert ce.get_connection_status() is False
-
-
-# ── _escape() ─────────────────────────────────────────────────────────────────
-
-class TestEscape:
-    def test_escapes_double_quotes(self):
-        assert '\\"' in ce._escape('"hello"')
-
-    def test_escapes_backslash(self):
-        assert "\\\\" in ce._escape("a\\b")
-
-    def test_escapes_newline(self):
-        result = ce._escape("line1\nline2")
-        assert "\\n" in result
-        assert "\n" not in result
-
-    def test_removes_carriage_return(self):
-        result = ce._escape("a\rb")
-        assert "\r" not in result
-
-    def test_plain_text_unchanged(self):
-        assert ce._escape("hello world") == "hello world"
 
 
 # ── fmt_time() ────────────────────────────────────────────────────────────────

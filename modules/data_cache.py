@@ -73,6 +73,8 @@ class DataCache:
         # _connect() est toujours appelé sous self._lock → création paresseuse sûre.
         if self._cx is None:
             self._cx = sqlite3.connect(str(self._path), check_same_thread=False)
+            self._cx.execute("PRAGMA journal_mode=WAL")
+            self._cx.execute("PRAGMA synchronous=NORMAL")
         return self._cx
 
     def _init_db(self) -> None:
@@ -171,6 +173,18 @@ class DataCache:
                     )
             except Exception as e:
                 logger.error("DataCache.log_raw(%s): %s", name, e)
+
+    def log_raw_many(self, rows: list[tuple]) -> None:
+        """Insère plusieurs lignes history en une seule transaction. rows: [(name, ts, source, value, unit), ...]"""
+        with self._lock:
+            try:
+                with self._connect() as conn:
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO history (name,ts,source,value,unit) VALUES (?,?,?,?,?)",
+                        rows,
+                    )
+            except Exception as e:
+                logger.error("DataCache.log_raw_many: %s", e)
 
     def update_history_ts(self, name: str, old_ts: float, new_ts: float) -> None:
         """Met à jour le timestamp d'une ligne history (fenêtre glissante capteurs)."""
@@ -284,32 +298,6 @@ class DataCache:
             except Exception as e:
                 logger.error("DataCache.update_ytdlp_job: %s", e)
 
-    def get_ytdlp_jobs(self, limit: int = 20) -> list[dict]:
-        """Retourne les jobs yt-dlp récents, du plus récent au plus ancien."""
-        try:
-            with self._lock, self._connect() as conn:
-                rows = conn.execute(
-                    "SELECT id, ts, url, params, folder, files, status, created_at "
-                    "FROM ytdlp_jobs ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
-            return [
-                {
-                    "id":         r[0],
-                    "ts":         r[1],
-                    "url":        r[2],
-                    "params":     json.loads(r[3]),
-                    "folder":     r[4],
-                    "files":      json.loads(r[5]),
-                    "status":     r[6],
-                    "created_at": r[7],
-                }
-                for r in rows
-            ]
-        except Exception as e:
-            logger.error("DataCache.get_ytdlp_jobs: %s", e)
-            return []
-
     # ── Migration CSV → SQLite (one-shot au premier démarrage) ────────────────
 
     def _migrate_legacy_csvs(self) -> None:
@@ -369,6 +357,29 @@ class DataCache:
                 logger.info("DataCache: %s — %d lignes importées", series_name, imported)
 
         logger.info("DataCache: migration terminée — %d lignes au total", total)
+
+    # ── Purge de l'historique ─────────────────────────────────────────────────
+
+    def purge_history(self, keep_days: int = 90,
+                      keep_forever_prefixes: tuple = ("enedis",)) -> int:
+        """
+        Supprime les lignes history plus vieilles que `keep_days`, sauf les séries
+        dont le nom commence par un des préfixes de `keep_forever_prefixes`
+        (par défaut enedis_daily : ~3 ans de données utiles, volume négligeable).
+        Retourne le nombre de lignes supprimées.
+        """
+        cutoff = time.time() - keep_days * 86400
+        like_excl = " AND ".join(f"name NOT LIKE '{p}%'" for p in keep_forever_prefixes)
+        try:
+            with self._lock:
+                with self._connect() as conn:
+                    cur = conn.execute(
+                        f"DELETE FROM history WHERE ts < ? AND {like_excl}", (cutoff,)
+                    )
+                return cur.rowcount
+        except Exception as e:
+            logger.error("DataCache.purge_history: %s", e)
+            return 0
 
     # ── Fraîcheur du cache ────────────────────────────────────────────────────
 

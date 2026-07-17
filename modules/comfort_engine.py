@@ -75,10 +75,12 @@ try:
     _LATITUDE      = _hcfg.GEO_LATITUDE
     _LONGITUDE     = _hcfg.GEO_LONGITUDE
     _DEFAULT_ROOMS = [room_id for room_id, *_ in _hcfg.ROOMS]
+    _N_CANDIDATES  = getattr(_hcfg, "COMFORT_N_CANDIDATES", 500)
 except Exception:
     _LATITUDE      = 45.55
     _LONGITUDE     = 6.22
     _DEFAULT_ROOMS = ["salon", "chambre1", "chambre2", "bureau"]
+    _N_CANDIDATES  = 500
 
 # ── Constantes (extraites de home_model/config.py) ───────────────────────────
 
@@ -101,7 +103,7 @@ COMFORT_TEMP_MAX           = 26.0
 PLANNING_HORIZON_HOURS     = 24.0
 PLANNING_BLOCK_HOURS       = 2.0
 PLANNING_EVAL_STEP_MINUTES = 30.0
-PLANNING_N_CANDIDATES      = 500
+PLANNING_N_CANDIDATES      = _N_CANDIDATES
 RANDOM_SEED                = 42
 
 _OPENMETEO_URL          = "https://api.open-meteo.com/v1/forecast"
@@ -145,17 +147,32 @@ def model_status() -> str:
     return STATUS_NONE
 
 
+_INFERENCE_CACHE: dict[tuple, tuple[float, dict]] = {}
+
+
 def run_inference(comfort_ranges: dict[str, tuple[float, float]]) -> dict:
     """Lance l'inférence directement en mémoire (plus de subprocess).
+
+    Mémoïsé par plages de confort, TTL aligné sur _WEATHER_INFERENCE_TTL (10 min) :
+    la météo d'inférence est elle-même cachée sur cette durée, donc deux clics
+    rapprochés avec les mêmes sliders referaient un calcul strictement identique.
 
     Retourne :
       {"status": "ok"|"error", "error": str|None, "rooms": [RoomPlan, ...]}
     """
     if model_status() == STATUS_NONE:
         return {"status": "error", "error": "Aucun modèle prédictif disponible.", "rooms": []}
+
+    key = tuple(sorted(comfort_ranges.items())) if comfort_ranges else ()
+    cached = _INFERENCE_CACHE.get(key)
+    if cached is not None and (time.time() - cached[0]) < _WEATHER_INFERENCE_TTL:
+        return cached[1]
+
     try:
-        result = _plan(comfort_ranges=comfort_ranges)
-        return {"status": "ok", "error": None, "rooms": _plan_to_room_plans(result)}
+        result   = _plan(comfort_ranges=comfort_ranges)
+        response = {"status": "ok", "error": None, "rooms": _plan_to_room_plans(result)}
+        _INFERENCE_CACHE[key] = (time.time(), response)
+        return response
     except Exception as exc:
         logger.exception("run_inference: échec")
         return {"status": "error", "error": str(exc), "rooms": []}
@@ -397,6 +414,9 @@ def _build_feature_table() -> pd.DataFrame:
 # CHARGEMENT DU MODÈLE ONNX
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_MODEL_CACHE: tuple | None = None   # (mtime, sess, meta)
+
+
 def _load_onnx_model(path: Path = MODELS_DIR / "limited.onnx") -> tuple[ort.InferenceSession, dict]:
     """Charge une session ONNX Runtime et extrait les métadonnées embarquées.
 
@@ -404,8 +424,17 @@ def _load_onnx_model(path: Path = MODELS_DIR / "limited.onnx") -> tuple[ort.Infe
     stockées dans le champ custom 'home_model_meta' du fichier ONNX sous forme
     de JSON. Les stats sont reconstruites en objets _FeatureStats numpy.
 
+    Mise en cache module (clé = mtime du fichier) : recharger la session à
+    chaque clic sur CALCULER coûte plusieurs centaines de ms sur RPi 3 pour
+    un fichier qui ne change jamais en fonctionnement normal.
+
     Retourne : (session, meta_dict)
     """
+    global _MODEL_CACHE
+    mtime = path.stat().st_mtime
+    if _MODEL_CACHE is not None and _MODEL_CACHE[0] == mtime:
+        return _MODEL_CACHE[1], _MODEL_CACHE[2]
+
     sess = ort.InferenceSession(str(path))
     raw  = json.loads(sess.get_modelmeta().custom_metadata_map["home_model_meta"])
 
@@ -415,9 +444,11 @@ def _load_onnx_model(path: Path = MODELS_DIR / "limited.onnx") -> tuple[ort.Infe
             std=np.array(d["std"],  dtype=np.float32),
         )
 
-    return sess, {**raw,
-                  "limited_stats": _to_stats(raw["limited_stats"]),
-                  "target_stats":  _to_stats(raw["target_stats"])}
+    meta = {**raw,
+            "limited_stats": _to_stats(raw["limited_stats"]),
+            "target_stats":  _to_stats(raw["target_stats"])}
+    _MODEL_CACHE = (mtime, sess, meta)
+    return sess, meta
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -696,6 +727,8 @@ def _plan(
         cost      = ctx.evaluate(sess, steps, comfort_ranges)
         if cost < best_cost:
             best_cost, best_schedule = cost, candidate
+            if best_cost == 0.0:   # borne inférieure de _comfort_cost (confort parfait) — arrêt anticipé
+                break
 
     eff_horizon = ctx.horizon_steps_count * SAMPLE_INTERVAL_MINUTES / 60.0
     eff_blocks  = min(_n_blocks(horizon_hours, block_hours), _n_blocks(eff_horizon, block_hours))

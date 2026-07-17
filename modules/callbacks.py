@@ -18,7 +18,6 @@ Tous les @callback Dash du dashboard, organisés par domaine :
 
 import io
 import logging
-import math
 import time
 import random
 import zipfile
@@ -26,6 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import httpx
 from dash import callback, dcc, Output, Input, State, html, no_update, ctx, ALL
+from dash.exceptions import PreventUpdate
 
 logger = logging.getLogger(__name__)
 import plotly.graph_objects as go
@@ -35,7 +35,6 @@ from modules.weather_service import weather_service
 from modules.sysinfo import (
     get_resources, get_system_uptime,
     check_systemctl, check_process, check_tcp,
-    HOST_INFO, SYSTEM_LABEL,
 )
 import config as CFG
 from modules.dashboard_layout import PAGE_IDS, ROOMS, CONFORT_ROOMS
@@ -143,6 +142,7 @@ def update_clock(_n):
 # Outputs : style de chaque page + className de chaque bouton nav
 
 @callback(
+    Output("active-page-store", "data"),
     *[Output(f"page-{p}",  "style")     for p in PAGE_IDS],
     *[Output(f"nav-{p}",   "className") for p in PAGE_IDS],
     *[Input(f"nav-{p}",    "n_clicks")  for p in PAGE_IDS],
@@ -178,7 +178,7 @@ def switch_page(*_clicks):
             page_styles.append({**style, "display": "none"})
             nav_classes.append("nav-btn")
 
-    return (*page_styles, *nav_classes)
+    return (active_page, *page_styles, *nav_classes)
 
 
 # ── Panneau collapsible — logique partagée ────────────────────────────────────
@@ -260,14 +260,17 @@ _PLANT_CACHE_MAX_AGE = 24 * 3600  # Durée maximale de rétention en cache DB (2
     *_plant_outputs_bar,
     *_plant_outputs_col,
     Input("interval-main", "n_intervals"),
+    Input("active-page-store", "data"),
 )
-def update_plants(_n):
+def update_plants(_n, active_page):
     """
     Met à jour les capteurs d'humidité plantes.
     Priorité : valeur MQTT fraîche (sensor_store, 24h max) → cache DB (24h max) → "--".
     Les valeurs fraîches sont persistées dans data_cache (clé plant.<pid>.soil_moisture)
     pour survivre aux redémarrages de l'application.
     """
+    if active_page != "capteurs":
+        raise PreventUpdate
     values, bar_styles, val_styles = [], [], []
 
     for pid, name, dflt, color in _plant_list:
@@ -275,7 +278,6 @@ def update_plants(_n):
 
         if real_val is not None:
             val = round(max(0.0, min(100.0, real_val)), 1)
-            data_cache.write(f"plant.{pid}.soil_moisture", val, "%", "zigbee")
         else:
             entry = data_cache.read(f"plant.{pid}.soil_moisture")
             if entry and (time.time() - entry["updated_at"]) < _PLANT_CACHE_MAX_AGE:
@@ -319,13 +321,16 @@ _window_outputs_col = [Output(sid, "style")    for sid, *_ in _window_list]
     *_window_outputs_val,
     *_window_outputs_col,
     Input("interval-main", "n_intervals"),
+    Input("active-page-store", "data"),
 )
-def update_windows(_n):
+def update_windows(_n, active_page):
     """
     Met à jour les capteurs d'ouverture/fermeture de fenêtre (SNZB-04).
     Convention Zigbee2MQTT : contact=True → fenêtre fermée, contact=False → ouverte.
     Priorité : valeur MQTT fraîche (sensor_store) → cache DB → "--".
     """
+    if active_page != "capteurs":
+        raise PreventUpdate
     values, val_styles = [], []
 
     for sid, name, dflt, color in _window_list:
@@ -333,7 +338,6 @@ def update_windows(_n):
 
         if real_val is not None:
             closed = real_val
-            data_cache.write(f"window.{sid}.contact", closed, "", "zigbee")
         else:
             entry = data_cache.read(f"window.{sid}.contact")
             closed = bool(entry["value"]) if entry else None
@@ -361,12 +365,15 @@ def update_windows(_n):
 @callback(
     Output("zigbee-discovery", "children"),
     Input("interval-main", "n_intervals"),
+    Input("active-page-store", "data"),
 )
-def update_zigbee_discovery(_n):
+def update_zigbee_discovery(_n, active_page):
     """
     Affiche les appareils Zigbee2MQTT actifs mais absents de CFG.ZIGBEE_DEVICES.
     Aide l'utilisateur à identifier et mapper ses capteurs.
     """
+    if active_page != "capteurs":
+        raise PreventUpdate
     if not mqtt_client.is_connected():
         return html.Div(
             "// BROKER MQTT HORS-LIGNE — vérifier Mosquitto sur localhost:1883 //",
@@ -788,9 +795,9 @@ def update_meteo(_n):
 
 # ── Capteurs (Zigbee2MQTT + fallback simulé) ──────────────────────────────────
 
-def _db_history(room_id: str, field: str) -> list[tuple]:
-    """Charge 24h d'historique depuis data/cache.db, retourne [(datetime, float)]."""
-    cutoff = (datetime.now() - timedelta(hours=24)).timestamp()
+def _db_history(room_id: str, field: str, hours: float = 24) -> list[tuple]:
+    """Charge `hours` d'historique depuis data/cache.db, retourne [(datetime, float)]."""
+    cutoff = (datetime.now() - timedelta(hours=hours)).timestamp()
     rows   = data_cache.read_history(f"sensor_{room_id}_{field}", since_ts=cutoff)
     result = []
     for r in rows:
@@ -810,14 +817,6 @@ def _field_from_sid(sid: str) -> str:
     if sid.endswith("-lux"):
         return "luminosity"
     return "unknown"
-
-
-def _sensor_source(room_id: str) -> str:
-    """Retourne la source metadata selon si la pièce est mappée dans ZIGBEE_DEVICES."""
-    for dev_name, dev_cfg in CFG.ZIGBEE_DEVICES.items():
-        if dev_cfg.get("room") == room_id and sensor_store.get_device_snapshot(dev_name):
-            return f"SNZB-02P · Zigbee2MQTT · {dev_name}"
-    return "simulé"
 
 
 # ── Mapping sensor_id → (cache_key, device_type) pour les tags "OUTDATED" ────
@@ -898,8 +897,6 @@ _ressentie_outputs = [Output(f"{rid}-ressentie", "children") for rid in _ressent
 @callback(
     *_landing_outputs,
     *_sensor_room_outputs,
-    Output("env-graph", "figure"),
-    Output("env-graph-humidity", "figure"),
     *_ressentie_outputs,
     Input("interval-main", "n_intervals"),
 )
@@ -908,15 +905,16 @@ def update_sensors(_n):
     Met à jour toutes les cartes capteurs (température, humidité, luminosité) toutes les 5 s.
     Source prioritaire : valeur MQTT fraîche via sensor_store ; affiche '--' si absente.
     Persiste les valeurs fraîches dans data_cache et les journalise dans la table history
-    (write-on-change). Construit aussi les graphes 24h température et humidité depuis SQLite.
-    Calcule la température ressentie (Steadman simplifié) et les flèches de tendance.
+    (write-on-change). Calcule la température ressentie (Steadman simplifié) et les flèches
+    de tendance (moyenne de la dernière heure — voir update_sensor_graphs pour les graphes 24h,
+    rafraîchis séparément toutes les 60 s, un historique 24h ne changeant pas visiblement en 5 s).
     """
-    # Pré-chargement de l'historique 24h pour toutes les pièces (réutilisé par les graphes
-    # ET les flèches de tendance — évite de requêter SQLite deux fois par pièce).
+    # Pré-chargement de l'historique 1h pour toutes les pièces, uniquement pour les flèches
+    # de tendance (évite de requêter SQLite deux fois par pièce).
     _hist: dict[tuple[str, str], list[tuple]] = {}
     for r_id, _, _, _ in ROOMS:
         for _f in ("temperature", "humidity"):
-            _hist[(r_id, _f)] = _db_history(r_id, _f)
+            _hist[(r_id, _f)] = _db_history(r_id, _f, hours=1)
 
     rendered_out = []
     _landing_vals: dict[int, object] = {}  # landing_pos → valeur pour home-landing-{pos}
@@ -984,7 +982,43 @@ def update_sensors(_n):
 
             rendered_out.append(out)
 
-    # ── Graphes 24h — température et humidité ────────────────────────────────────
+    # ── Températures ressenties (Steadman simplifié, sans vent) ─────────────────
+    _no_data = html.Span("--", style={"color": CP["text_dim"], "fontSize": "32px"})
+    ressentie_out = []
+    for rid in _ressentie_room_ids:
+        T = _room_temp.get(rid)
+        H = _room_hygro.get(rid)
+        if T is not None and H is not None:
+            at = round(_steadman(T, H), 1)
+            col = _temp_color(at, CFG.ALERT_TEMP_MIN, CFG.ALERT_TEMP_MAX)
+            ressentie_out.append(html.Span(f"{at}°C", style={"color": col}))
+        else:
+            ressentie_out.append(_no_data)
+
+    _no_landing = html.Span("--", style={"color": CP["text_dim"]})
+    return (
+        *[_landing_vals.get(pos, _no_landing) for pos in sorted(_landing_map)],
+        *rendered_out,
+        *ressentie_out,
+    )
+
+
+# ── Graphes capteurs 24h — température et humidité (page Capteurs, 60 s) ─────
+# Séparé de update_sensors (5 s) : un historique 24h ne change pas visiblement
+# en 5 s, et re-sérialiser les deux figures complètes à cette fréquence coûte
+# du CPU et du volume réseau pour rien (voir P5 du rapport d'optimisation).
+
+@callback(
+    Output("env-graph", "figure"),
+    Output("env-graph-humidity", "figure"),
+    Input("interval-graphs", "n_intervals"),
+    Input("active-page-store", "data"),
+)
+def update_sensor_graphs(_n, active_page):
+    """Construit les graphes 24h température et humidité (toutes pièces) depuis SQLite."""
+    if active_page != "capteurs":
+        raise PreventUpdate
+
     _graph_legend = dict(
         orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
         font=dict(size=10, color=CP["text_dim"], family=FONT_MONO),
@@ -1007,7 +1041,7 @@ def update_sensors(_n):
             (fig_data,     "temperature", "%{x|%H:%M}  %{y:.1f}°C"),
             (fig_hum_data, "humidity",    "%{x|%H:%M}  %{y:.0f}%"),
         ):
-            pts = _hist[(r_id, field)]
+            pts = _db_history(r_id, field, hours=24)
             if not pts:
                 continue
             data_list.append({
@@ -1022,28 +1056,7 @@ def update_sensors(_n):
 
     fig     = {"data": fig_data,     "layout": _graph_layout}
     fig_hum = {"data": fig_hum_data, "layout": _graph_layout}
-
-    # ── Températures ressenties (Steadman simplifié, sans vent) ─────────────────
-    _no_data = html.Span("--", style={"color": CP["text_dim"], "fontSize": "32px"})
-    ressentie_out = []
-    for rid in _ressentie_room_ids:
-        T = _room_temp.get(rid)
-        H = _room_hygro.get(rid)
-        if T is not None and H is not None:
-            at = round(_steadman(T, H), 1)
-            col = _temp_color(at, CFG.ALERT_TEMP_MIN, CFG.ALERT_TEMP_MAX)
-            ressentie_out.append(html.Span(f"{at}°C", style={"color": col}))
-        else:
-            ressentie_out.append(_no_data)
-
-    _no_landing = html.Span("--", style={"color": CP["text_dim"]})
-    return (
-        *[_landing_vals.get(pos, _no_landing) for pos in sorted(_landing_map)],
-        *rendered_out,
-        fig,
-        fig_hum,
-        *ressentie_out,
-    )
+    return fig, fig_hum
 
 
 # ── Confort — optimisation climatique ─────────────────────────────────────────
@@ -1057,9 +1070,12 @@ _CONFORT_BASE_MARKS = {t: {"label": f"{t}°", "style": {"fontSize": "11px",
 @callback(
     *[Output(f"confort-range-{room_id}", "marks") for room_id, *_ in CONFORT_ROOMS],
     Input("interval-main", "n_intervals"),
+    Input("active-page-store", "data"),
 )
-def update_confort_temp_marks(_n):
+def update_confort_temp_marks(_n, active_page):
     """Ajoute sur chaque slider une marque à la position de la température actuelle."""
+    if active_page != "confort":
+        raise PreventUpdate
     results = []
     for room_id, _, accent, _ in CONFORT_ROOMS:
         marks = dict(_CONFORT_BASE_MARKS)
@@ -1163,9 +1179,12 @@ if _SENSOR_TAG_MAP:
         *[Output(f"{sid}-outdated-tag", "children") for sid in _SENSOR_TAG_MAP],
         *[Output(f"{sid}-outdated-tag", "style")    for sid in _SENSOR_TAG_MAP],
         Input("interval-main", "n_intervals"),
+        Input("active-page-store", "data"),
     )
-    def update_sensor_outdated_tags(_n):
+    def update_sensor_outdated_tags(_n, active_page):
         """Tag OUTDATED jaune (> 15 min) ou rouge (> 3 h) sur les cartes capteurs."""
+        if active_page != "capteurs":
+            raise PreventUpdate
         now = time.time()
         children_out, styles_out = [], []
         for sid, (cache_key, _dev_type) in _SENSOR_TAG_MAP.items():
@@ -1213,14 +1232,17 @@ def _hline_annot(y: float, text: str) -> dict:
     Output("energie-graph-monthly",  "figure"),
     Input("interval-main",           "n_intervals"),
     Input("energie-unit-btn",        "n_clicks"),
+    Input("active-page-store",       "data"),
 )
-def update_energie(_n, n_clicks):
+def update_energie(_n, n_clicks, active_page):
     """
     Met à jour la page Énergie : stat cards (hier/mois/mois précédent), barplot 30 j,
     barplot 12 mois glissants.
     Toggle kWh/€ piloté par n_clicks (pair = kWh, impair = €).
     Code couleur : rouge ≥ p75, bleu ≤ p75, vert = mois en cours.
     """
+    if active_page != "energie":
+        raise PreventUpdate
     import statistics
     from collections import defaultdict
 
@@ -1410,6 +1432,55 @@ _MQTT_COUNT = 4382  # simulé — à remplacer par lecture broker MQTT
 _SVC_PROBE_TTL = 60.0
 _svc_probe_cache: dict = {"ts": 0.0, "data": None}
 
+# Bloc ML (boîte Isolation Forest) — ~90 % constant, construit une seule fois à
+# l'import. Seules les lignes de scores (_build_anomaly_rows()) varient d'un tick
+# à l'autre ; inutile de re-sérialiser titre/description/liste toutes les 8 s.
+_ML_STATIC_HEADER = [
+    html.Div([
+        html.Span("MODÈLE", style={"fontSize": "12px", "color": CP["text_dim"],
+                                    "fontFamily": FONT_MONO, "letterSpacing": "2px"}),
+        html.Span("sklearn.IsolationForest", style={"fontSize": "14px", "color": CP["cyan"],
+                                                     "fontFamily": FONT_MONO}),
+    ], style={"display": "flex", "justifyContent": "space-between",
+              "borderBottom": "1px solid rgba(0,229,255,0.08)", "paddingBottom": "8px",
+              "marginBottom": "10px"}),
+
+    html.Div("Ce que surveille le modèle :", style={
+        "fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
+        "marginBottom": "6px",
+    }),
+    html.Ul([
+        html.Li("Dérive anormale de température (pic/chute rapide)",
+                style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
+                       "marginBottom": "4px"}),
+        html.Li("Humidité hors de la plage habituelle (ex : fuite, condensation)",
+                style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
+                       "marginBottom": "4px"}),
+        html.Li("Capteur silencieux / déconnecté (score d'anomalie élevé)",
+                style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
+                       "marginBottom": "4px"}),
+        html.Li("Corrélations inter-pièces anormales (ex : salon chaud, bureau froid simultanément)",
+                style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO}),
+    ], style={"paddingLeft": "18px", "marginBottom": "12px"}),
+
+    html.Div("Scores d'anomalie en temps réel :", style={
+        "fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
+        "marginBottom": "8px",
+    }),
+]
+
+_ML_STATIC_FOOTER = html.Div([
+    html.Span("STATUT GLOBAL", style={"fontSize": "12px", "color": CP["text_dim"],
+                                       "fontFamily": FONT_MONO, "letterSpacing": "2px"}),
+    html.Span("AUCUNE ANOMALIE DÉTECTÉE", style={
+        "fontSize": "13px", "color": CP["green"], "fontFamily": FONT_MONO,
+        "letterSpacing": "1px",
+    }),
+], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+          "marginTop": "10px", "paddingTop": "8px",
+          "borderTop": "1px solid rgba(0,229,255,0.08)"})
+
+
 @callback(
     Output("bar-cpu",      "style"),
     Output("val-cpu",      "children"),
@@ -1529,53 +1600,8 @@ def update_system(_n):
         for svc, kind, state in services_data
     ])
 
-    # Boîte ML — Isolation Forest
-    ml_content = html.Div([
-        html.Div([
-            html.Span("MODÈLE", style={"fontSize": "12px", "color": CP["text_dim"],
-                                        "fontFamily": FONT_MONO, "letterSpacing": "2px"}),
-            html.Span("sklearn.IsolationForest", style={"fontSize": "14px", "color": CP["cyan"],
-                                                         "fontFamily": FONT_MONO}),
-        ], style={"display": "flex", "justifyContent": "space-between",
-                  "borderBottom": "1px solid rgba(0,229,255,0.08)", "paddingBottom": "8px",
-                  "marginBottom": "10px"}),
-
-        html.Div("Ce que surveille le modèle :", style={
-            "fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
-            "marginBottom": "6px",
-        }),
-        html.Ul([
-            html.Li("Dérive anormale de température (pic/chute rapide)",
-                    style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
-                           "marginBottom": "4px"}),
-            html.Li("Humidité hors de la plage habituelle (ex : fuite, condensation)",
-                    style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
-                           "marginBottom": "4px"}),
-            html.Li("Capteur silencieux / déconnecté (score d'anomalie élevé)",
-                    style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
-                           "marginBottom": "4px"}),
-            html.Li("Corrélations inter-pièces anormales (ex : salon chaud, bureau froid simultanément)",
-                    style={"fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO}),
-        ], style={"paddingLeft": "18px", "marginBottom": "12px"}),
-
-        # Scores d'anomalie — capteurs actifs uniquement (dynamique)
-        html.Div("Scores d'anomalie en temps réel :", style={
-            "fontSize": "13px", "color": CP["text_dim"], "fontFamily": FONT_MONO,
-            "marginBottom": "8px",
-        }),
-        *_build_anomaly_rows(),
-
-        html.Div([
-            html.Span("STATUT GLOBAL", style={"fontSize": "12px", "color": CP["text_dim"],
-                                               "fontFamily": FONT_MONO, "letterSpacing": "2px"}),
-            html.Span("AUCUNE ANOMALIE DÉTECTÉE", style={
-                "fontSize": "13px", "color": CP["green"], "fontFamily": FONT_MONO,
-                "letterSpacing": "1px",
-            }),
-        ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
-                  "marginTop": "10px", "paddingTop": "8px",
-                  "borderTop": "1px solid rgba(0,229,255,0.08)"}),
-    ])
+    # Boîte ML — Isolation Forest (titre/description/liste constants, cf. _ML_STATIC_*)
+    ml_content = html.Div([*_ML_STATIC_HEADER, *_build_anomaly_rows(), _ML_STATIC_FOOTER])
 
     footer_mqtt = f"MQTT: {_MQTT_COUNT:,} MSG".replace(",", " ")
 
@@ -1677,28 +1703,35 @@ _ISO2 = {
 }
 
 
-def _build_worldmap(countries: list) -> go.Figure:
-    """Construit la choroplèthe des pays de destination du trafic DNS NextDNS."""
-    _GEO = dict(
-        showframe=False,
-        showcoastlines=False,
-        showland=True,
-        landcolor="#141828",
-        showocean=True,
-        oceancolor="#060810",
-        showlakes=False,
-        showcountries=True,
-        countrycolor="rgba(0,229,255,0.12)",
-        projection_type="natural earth",
-        bgcolor="rgba(0,0,0,0)",
-    )
-    _LAYOUT = {
-        **PLOTLY_THEME,
-        "height": WORLDMAP_HEIGHT,
-        "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
-        "geo":    {"bgcolor": "rgba(0,0,0,0)"},
-    }
+_WORLDMAP_GEO = {
+    "showframe":      False,
+    "showcoastlines": False,
+    "showland":       True,
+    "landcolor":      "#141828",
+    "showocean":      True,
+    "oceancolor":     "#060810",
+    "showlakes":      False,
+    "showcountries":  True,
+    "countrycolor":   "rgba(0,229,255,0.12)",
+    "projection":     {"type": "natural earth"},
+    "bgcolor":        "rgba(0,0,0,0)",
+}
+_WORLDMAP_LAYOUT = {
+    **PLOTLY_THEME,
+    "height": WORLDMAP_HEIGHT,
+    "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
+    "geo":    {**_WORLDMAP_GEO, "bgcolor": "rgba(0,0,0,0)"},
+}
 
+
+def _build_worldmap(countries: list) -> dict:
+    """
+    Construit la choroplèthe des pays de destination du trafic DNS NextDNS.
+    Retourne un dict plain plutôt qu'un go.Figure : la validation complète du
+    schéma Choropleth par Plotly est un surcoût inutile puisque Dash sérialise
+    de toute façon en JSON (même logique que les figures Énergie/Capteurs,
+    cf. P5/P11 du rapport d'optimisation).
+    """
     locs, vals, texts = [], [], []
     for c in countries:
         iso3 = _ISO2.get(c.get("country", ""))
@@ -1708,31 +1741,28 @@ def _build_worldmap(countries: list) -> go.Figure:
             texts.append(f"{c['country']} — {c['queries']:,} req.")
 
     if not locs:
-        fig = go.Figure()
-        fig.update_geos(**_GEO)
-        fig.update_layout(**_LAYOUT)
-        return fig
+        return {"data": [], "layout": _WORLDMAP_LAYOUT}
 
-    fig = go.Figure(go.Choropleth(
-        locations=locs,
-        z=vals,
-        text=texts,
-        hovertemplate="%{text}<extra></extra>",
-        colorscale=[
-            [0.0, "rgba(0,229,255,0.08)"],
-            [0.3, "rgba(0,229,255,0.35)"],
-            [0.7, "rgba(0,229,255,0.70)"],
-            [1.0, "#00e5ff"],
-        ],
-        showscale=False,
-        marker_line_color="rgba(0,229,255,0.20)",
-        marker_line_width=0.5,
-        zmin=0,
-        zmax=max(vals),
-    ))
-    fig.update_geos(**_GEO)
-    fig.update_layout(**_LAYOUT)
-    return fig
+    return {
+        "data": [{
+            "type": "choropleth",
+            "locations": locs,
+            "z": vals,
+            "text": texts,
+            "hovertemplate": "%{text}<extra></extra>",
+            "colorscale": [
+                [0.0, "rgba(0,229,255,0.08)"],
+                [0.3, "rgba(0,229,255,0.35)"],
+                [0.7, "rgba(0,229,255,0.70)"],
+                [1.0, "#00e5ff"],
+            ],
+            "showscale": False,
+            "marker": {"line": {"color": "rgba(0,229,255,0.20)", "width": 0.5}},
+            "zmin": 0,
+            "zmax": max(vals),
+        }],
+        "layout": _WORLDMAP_LAYOUT,
+    }
 
 
 def _nas_volume_row(vol: dict) -> html.Div:
@@ -1823,13 +1853,16 @@ _NAS_TAG_HIDDEN = {"display": "none"}
     Output("nas-system",        "children"),
     Output("nas-outdated-tag",  "style"),
     Input("interval-reseau", "n_intervals"),
+    Input("active-page-store", "data"),
 )
-def update_reseau(_n):
+def update_reseau(_n, active_page):
     """
     Met à jour la page Réseau : devices LAN (nmap, cache 120 s), stats DNS NextDNS (cache 60 s),
     NAS Synology (cache 1 h), carte choroplèthe.
     Les données fraîches sont persistées dans data_cache pour le fallback.
     """
+    if active_page != "reseau":
+        raise PreventUpdate
     # ── Devices LAN (nmap, cache 120 s) ────────────────────────────────────────
     devices = get_local_devices()
     if devices:
@@ -2041,9 +2074,12 @@ def update_plex_player(local_track):
     Output("mu-artists",   "children"),
     Output("mu-playlists", "children"),
     Input("interval-plex-shelf", "n_intervals"),
+    Input("active-page-store",   "data"),
 )
-def update_plex_shelves(_n):
+def update_plex_shelves(_n, active_page):
     """Met à jour les carrousels artistes récents et playlists (refresh toutes les 60 s)."""
+    if active_page != "musique":
+        raise PreventUpdate
     def _card(thumb: str, label: str, rating_key: str, media: str, sub: str = "") -> html.Div:
         img = (
             html.Img(src=thumb, className="plex-card-img")
@@ -2517,13 +2553,16 @@ def _log_entry(ts: str, level: str, msg: str, color: str) -> html.Div:
     Output("home-log",     "children"),
     Output("home-devices", "children"),
     Input("interval-main", "n_intervals"),
+    Input("active-page-store", "data"),
 )
-def update_home_status(_n):
+def update_home_status(_n, active_page):
     """
     Met à jour le journal système et la liste des périphériques réseau (page Accueil).
     Vérifie : cache expiré par catégorie, arrosage plantes, fetch Enedis échoué,
     données électricité périmées (> 36h), modèle confort indisponible.
     """
+    if active_page != "accueil":
+        raise PreventUpdate
     now_str = datetime.now().strftime("%H:%M:%S")
 
     # ── Fraîcheur des données ─────────────────────────────────────────────────
@@ -2860,6 +2899,22 @@ def collect_dl_action(_ok, _cancel, artist, albumartist, album, year, title, fil
         "save_on_device": bool(save_device),
         "ts":             time.time(),
     }
+
+
+@callback(
+    Output("interval-ytdlp", "disabled"),
+    Input("dl-state-store",  "data"),
+    prevent_initial_call=True,
+)
+def toggle_dl_interval(_state):
+    """
+    Active le polling 1 s uniquement pendant un job yt-dlp (~100 % du temps, aucun
+    téléchargement n'est en cours). Dépend de dl-state-store — écrit par
+    update_dl_display après tout clear() — plutôt que de dl-trigger-store/
+    dl-action-store directement, pour ne jamais lire le snapshot avant que
+    update_dl_display ait fini de le traiter.
+    """
+    return ytdlp_service.get_snapshot() is None
 
 
 @callback(
